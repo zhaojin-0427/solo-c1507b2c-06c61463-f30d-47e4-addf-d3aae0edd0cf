@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>轮系配齿台 · Gear Train Workbench</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>轮系配齿台</h1>
+    <div class="toolbar">
+      <label class="toolbtn" title="点击空白处放轴，点击轴添加齿轮">
+        <input type="radio" name="mode" value="place" checked><span>放轴/齿轮</span>
+      </label>
+      <label class="toolbtn" title="从一只齿轮拖到另一只建立啮合">
+        <input type="radio" name="mode" value="mesh"><span>建啮合</span>
+      </label>
+      <label class="toolbtn" title="从一根轴拖到另一根建立同轴（同心）关系">
+        <input type="radio" name="mode" value="coax"><span>定同轴</span>
+      </label>
+      <span class="sep"></span>
+      <button id="btn-play" type="button">▶ 逐级播放</button>
+      <button id="btn-spin" type="button">↻ 连续旋转</button>
+      <span class="sep"></span>
+      <button id="btn-sample" type="button">载入示例</button>
+      <button id="btn-clear" type="button" class="danger">清空</button>
+      <span class="spacer"></span>
+      <span id="save-state" class="savestate"></span>
+    </div>
+  </header>
+
+  <main>
+    <section id="canvas-wrap">
+      <svg id="canvas" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3"
+                  orient="auto" markerUnits="strokeWidth">
+            <path d="M0,0 L8,3 L0,6 Z" fill="#5b8def"/>
+          </marker>
+          <pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse"
+                   patternTransform="rotate(45)">
+            <line x1="0" y1="0" x2="0" y2="6" stroke="#b08968" stroke-width="2" opacity="0.45"/>
+          </pattern>
+        </defs>
+        <g id="world">
+          <g id="layer-relations"></g>
+          <g id="layer-preview-baseline"></g>
+          <g id="layer-preview"></g>
+          <g id="layer-drag"></g>
+          <g id="layer-gears"></g>
+          <g id="layer-shafts"></g>
+        </g>
+      </svg>
+      <div id="hint">提示：「放轴/齿轮」模式下点击空白处放轴，点击已有轴为其添加齿轮；Delete 键删除所选对象</div>
+    </section>
+
+    <aside id="side">
+      <div class="tabs">
+        <button class="tab active" data-tab="analysis">分析</button>
+        <button class="tab" data-tab="props">属性</button>
+        <button class="tab" data-tab="search">配齿搜索</button>
+        <button class="tab" data-tab="library">方案库</button>
+      </div>
+
+      <div class="panel active" id="panel-analysis">
+        <div id="ratio-box" class="ratio-box"></div>
+        <h3>诊断 <span id="issue-count" class="badge"></span></h3>
+        <ul id="issue-list"></ul>
+        <h3>各轴转速与复位循环</h3>
+        <div id="cycle-head" class="muted"></div>
+        <table id="shaft-table"><tbody></tbody></table>
+      </div>
+
+      <div class="panel" id="panel-props">
+        <div id="props-body" class="muted">在画布上选择轴、齿轮、啮合或同轴关系后在此编辑。</div>
+      </div>
+
+      <div class="panel" id="panel-search">
+        <div class="field">
+          <label>目标总传动比（输出/输入，分数如 -5/12；不带负号则只比绝对值）</label>
+          <input id="s-target" value="1/4">
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label>允许误差 %</label>
+            <input id="s-tol" type="number" step="0.1" value="1">
+          </div>
+          <div class="field">
+            <label>中心距容差 mm</label>
+            <input id="s-centertol" type="number" step="0.01" value="0.05">
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label>齿数下限</label>
+            <input id="s-zmin" type="number" value="12">
+          </div>
+          <div class="field">
+            <label>齿数上限</label>
+            <input id="s-zmax" type="number" value="96">
+          </div>
+        </div>
+        <div class="field">
+          <label>可用模数（逗号分隔，如 0.5,1,1.5）</label>
+          <input id="s-modules" value="0.5,1,1.5">
+        </div>
+        <p class="muted small">锁定项：勾选轴的「锁定位置」或齿轮的「锁定」后不参与替换。未锁定轴会按新中心距自动重排，位移计入排序。</p>
+        <button id="btn-search" type="button" class="primary">搜索替换组合</button>
+        <div id="search-meta" class="muted small"></div>
+        <ol id="candidate-list"></ol>
+      </div>
+
+      <div class="panel" id="panel-library">
+        <div class="field-row">
+          <input id="alt-name" placeholder="方案名称（可选）">
+          <button id="btn-save-alt" type="button" class="primary">另存为方案</button>
+        </div>
+        <p id="baseline-line" class="muted small"></p>
+        <ul id="alt-list"></ul>
+      </div>
+    </aside>
+  </main>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>
