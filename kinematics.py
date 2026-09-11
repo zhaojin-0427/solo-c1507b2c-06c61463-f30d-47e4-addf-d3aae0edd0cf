@@ -353,6 +353,8 @@ def _train_component(state):
                     reach.add(v)
                     q.append(v)
     train_gears = {gid for gid, sid in g2s.items() if sid in reach}
+    # 只保留动力链内的啮合边（画布上独立的啮合组不参与搜索）
+    gpair = [(a, b) for (a, b) in gpair if a in train_gears and b in train_gears]
     return reach, train_gears, gpair
 
 
@@ -369,6 +371,9 @@ def search(params: dict) -> dict:
     deadline = time.time() + float(params.get("timeBudget", 8.0))
 
     target = Fraction(target_s)
+    tol_frac = Fraction(str(tol)) / 100
+    tol_lo = 1 - tol_frac
+    tol_hi = 1 + tol_frac
     magnitude_only = not target_s.startswith("-")
     base = analyze(state, center_tol)
 
@@ -512,28 +517,74 @@ def search(params: dict) -> dict:
         if not gears[gid].get("locked") and gid not in seen_order:
             order_gears.append(gid)
 
+    # ---- 搜索专用轻量布置（只依赖齿数与模数，按 BFS 树布置） ----
+    locked_xy = {sid: (float(shafts[sid]["x"]), float(shafts[sid]["y"])) for sid in locked_pos}
+    old_xy = {sid: (float(s["x"]), float(s["y"])) for sid, s in shafts.items()}
+    tree_edges = [(cur, other, k) for k, cur, other in edge_order]
+    cross_idx = cross_edges
+
+    def place_light(assign):
+        """返回 (positions, max_res, max_move)。树边精确布置，残差校验全部边。"""
+        pos = dict(locked_xy)
+        if input_id not in pos:
+            pos[input_id] = old_xy[input_id]
+        edge_req = {}
+        for k, (a, b) in enumerate(gpair):
+            ga, gb = gears[a], gears[b]
+            m, za, zb = assign[a][0], assign[a][1], assign[b][1]
+            internal = bool(ga.get("internal") or gb.get("internal"))
+            edge_req[k] = m * (za + zb) / 2 if not internal else m * abs(za - zb) / 2
+        for parent, child, k in tree_edges:
+            if child in pos or parent not in pos:
+                continue
+            req = edge_req[k]
+            x0, y0 = pos[parent]
+            ox, oy = old_xy[child]
+            dx, dy = ox - x0, oy - y0
+            d = hypot(dx, dy) or 1.0
+            pos[child] = (x0 + dx / d * req, y0 + dy / d * req)
+        for sid in shafts:
+            if sid not in pos:
+                pos[sid] = old_xy[sid]
+        # 残差：树边按构造精确；只需校验闭合（cross）边
+        max_res = 0.0
+        for k in cross_idx:
+            a, b = gpair[k]
+            sa, sb = gears[a]["shaftId"], gears[b]["shaftId"]
+            d = hypot(pos[sa][0] - pos[sb][0], pos[sa][1] - pos[sb][1])
+            max_res = max(max_res, abs(d - edge_req[k]))
+        max_move = 0.0
+        for sid in shafts:
+            if sid not in locked_pos:
+                max_move = max(max_move,
+                               hypot(pos[sid][0] - old_xy[sid][0],
+                                     pos[sid][1] - old_xy[sid][1]))
+        positions = {sid: {"x": round(x, 4), "y": round(y, 4)}
+                     for sid, (x, y) in pos.items()}
+        return positions, round(max_res, 4), round(max_move, 4)
+
     def complete(assign, sp_out):
-        """assign: {gid:(m,z)}；sp_out: 各轴最终分数转速。"""
+        """assign: {gid:(m,z)}；sp_out: 各轴整数对转速 (num, den)。"""
         changed = {}
-        light_gears = []
         for gid, (m, z) in assign.items():
             g0 = gears[gid]
             if not g0.get("locked") and (
                     int(g0["z"]) != z or abs(float(g0["module"]) - float(m)) > 1e-12):
                 changed[gid] = (int(g0["z"]), float(g0["module"]))
-            light_gears.append({"id": gid, "shaftId": g0["shaftId"], "z": z,
-                                "module": m, "internal": bool(g0.get("internal"))})
-        train_set = set(train_gears)
-        light_gears += [g for g in state.get("gears", []) if g["id"] not in train_set]
-        light_state = {"shafts": list(shafts.values()), "gears": light_gears,
-                       "meshes": state.get("meshes", [])}
-        positions, max_res, max_move = place_shafts(light_state, locked_pos)
+        placed = place_light(assign)
+        if placed is None:
+            return
+        positions, max_res, max_move = placed
+        if max_res > center_tol:
+            return  # 几何不可行（如两锁定圆无交点），候选不可用
 
+        # L：使所有 z*n 为整数的最小输入转数；n=num/den（未归约），分母为 den/gcd(z*num,den)
         L = 1
         for gid, (m, z) in assign.items():
             sid = gears[gid]["shaftId"]
             if sid in sp_out:
-                L = lcm(L, (Fraction(z) * sp_out[sid]).denominator)
+                pn, pd = sp_out[sid]
+                L = lcm(L, pd // gcd(z * pn, pd))
 
         replaced = []
         for gid, (z0, m0) in changed.items():
@@ -541,7 +592,8 @@ def search(params: dict) -> dict:
             replaced.append({"id": gid, "name": _gname(gears[gid]),
                              "z0": z0, "m0": m0, "z1": z1, "m1": m1,
                              "internal": bool(gears[gid].get("internal"))})
-        rr = sp_out[output_id]
+        on, od = sp_out[output_id]
+        rr = Fraction(on, od)
         err = (abs(abs(rr) - abs(target)) / abs(target)) if magnitude_only \
             else abs(rr - target) / abs(target)
         base_cycle = (base.get("cycle") or {}).get("inputTurnsV", 1) or 1
@@ -559,9 +611,26 @@ def search(params: dict) -> dict:
             "cycleRatio": round(float(L) / base_cycle, 4),
         })
 
+    # 输出路径：从输入到输出经过的树边，记录 (父轴齿轮id, 子轴齿轮id, 内啮合?)
+    out_path_edges = []
+    if output_id in par_shaft:
+        cur = output_id
+        while par_shaft[cur] is not None:
+            k = par_edge[cur]
+            a, b = gpair[k]
+            ga, gb = gears[a], gears[b]
+            if ga["shaftId"] == par_shaft[cur]:
+                gp_id, gc_id, internal = a, b, bool(ga.get("internal") or gb.get("internal"))
+            else:
+                gp_id, gc_id, internal = b, a, bool(ga.get("internal") or gb.get("internal"))
+            out_path_edges.append((gp_id, gc_id, internal))
+            cur = par_shaft[cur]
+    out_path_edges.reverse()
+    out_path_gears = set(x for e in out_path_edges for x in e[:2])
+
     def propagate(gid, assign, sp):
-        """齿轮 gid 齿数刚确定（assign 已更新），推进所有与之相关且对方已定的边。
-        返回 (ok, new_speeds)，new_speeds 供回溯。"""
+        """整数对转速传播：sp[shaft] = (num, den, sign=±1 合入 num 符号)。
+        不做 gcd 归约；比较时叉乘。返回 (ok, touched)。"""
         stack = [gid]
         touched = set()
         while stack:
@@ -574,17 +643,17 @@ def search(params: dict) -> dict:
                     continue
                 internal = bool(ga.get("internal") or gb.get("internal"))
                 sa, sb = ga["shaftId"], gb["shaftId"]
-                sign = 1 if internal else -1
-                candidates = [
-                    (sa, sb, Fraction(za, zb)),              # v_b = sign*za/zb*v_a
-                    (sb, sa, Fraction(zb, za)),              # v_a = sign*zb/za*v_b
-                ]
-                for drive, driven, frac in candidates:
+                sgn = 1 if internal else -1
+                # v_b = sgn*za/zb*v_a ;  v_a = sgn*zb/za*v_b
+                candidates = ((sa, sb, sgn * za, zb), (sb, sa, sgn * zb, za))
+                for drive, driven, pn, qn in candidates:
                     if drive not in sp:
                         continue
-                    v = sp[drive] * (Fraction(sign, 1) * frac)
+                    dn, dd = sp[drive]
+                    v = (dn * pn, dd * qn)
                     if driven in sp:
-                        if sp[driven] != v:
+                        en, ed = sp[driven]
+                        if en * v[1] != v[0] * ed:
                             return False, touched
                     else:
                         sp[driven] = v
@@ -594,6 +663,50 @@ def search(params: dict) -> dict:
                                     assign.get(other, (None, None))[1] is not None:
                                 stack.append(other)
         return True, touched
+
+    # 容差目标上下界（预计算为整数分数，供叉乘）
+    _at = abs(target)
+    _lb, _hb = _at * tol_lo, _at * tol_hi
+    tol_lo_n, tol_lo_d = _lb.numerator, _lb.denominator
+    tol_hi_n, tol_hi_d = _hb.numerator, _hb.denominator
+
+    def range_prune(assign):
+        """输出树路径上：已定齿数贡献固定，未定齿数取 [zmin,zmax]，
+        要求输出总比值的绝对值与目标容差区间有交集；符号已定时校验符号。"""
+        if not out_path_edges:
+            return True
+        lo_n, lo_d, hi_n, hi_d = 1, 1, 1, 1
+        fixed_sign = 1
+        sign_known = True
+        for gp_id, gc_id, internal in out_path_edges:
+            if not internal:
+                fixed_sign *= -1
+            zp = assign.get(gp_id, (None, None))[1]
+            zc = assign.get(gc_id, (None, None))[1]
+            if zp is None:
+                sign_known = False
+            if zc is None:
+                sign_known = False
+            if zp is None and zc is None:
+                lo_n, lo_d, hi_n, hi_d = lo_n * zmin, lo_d * zmax, hi_n * zmax, hi_d * zmin
+            elif zp is None:
+                lo_n, lo_d, hi_n, hi_d = lo_n * zmin, lo_d * zc, hi_n * zmax, hi_d * zc
+            elif zc is None:
+                lo_n, lo_d, hi_n, hi_d = lo_n * zp, lo_d * zmax, hi_n * zp, hi_d * zmin
+            else:
+                lo_n, lo_d, hi_n, hi_d = lo_n * zp, lo_d * zc, hi_n * zp, hi_d * zc
+        if lo_n * hi_d > hi_n * lo_d:
+            lo_n, hi_n = hi_n, lo_n
+            lo_d, hi_d = hi_d, lo_d
+        # hi >= 下界 且 lo <= 上界，整数叉乘（上下界已预算）
+        if hi_n * tol_lo_d < tol_lo_n * hi_d:
+            return False
+        if lo_n * tol_hi_d > tol_hi_n * lo_d:
+            return False
+        if sign_known and not magnitude_only:
+            if (fixed_sign >= 0) != (target >= 0):
+                return False
+        return True
 
     # 齿轮 -> 所在啮合边索引；轴 -> 齿轮
     gear_of = defaultdict(list)
@@ -619,14 +732,20 @@ def search(params: dict) -> dict:
             assign[gid] = (module_val, z)
             if not prune(assign):
                 continue
+            if not range_prune(assign):
+                continue
             ok, touched = propagate(gid, assign, sp)
             if ok:
-                # 输出轴速度一旦算出即可按容差剪枝（之后齿数不再经过输出路径）
+                # 输出轴速度一旦算出即可按容差剪枝
                 out_v = sp.get(output_id)
                 if out_v is not None:
-                    r = abs(out_v) if magnitude_only else out_v
-                    t = abs(target) if magnitude_only else target
-                    if abs(r - t) <= t * (tol / 100.0):
+                    on, od = out_v
+                    # |on/od - t| <= |t|*tol/100，叉乘比较
+                    tn, td = target.numerator, target.denominator
+                    # 比较 |on*td| 与 |tn*od| 的相对误差
+                    lhs = abs(abs(on * td) - abs(tn * od)) * 100
+                    rhs = abs(tn * od) * tol
+                    if lhs <= rhs:
                         dfs_teeth(idx + 1, assign, sp)
                 else:
                     dfs_teeth(idx + 1, assign, sp)
@@ -641,10 +760,11 @@ def search(params: dict) -> dict:
         if stop():
             return
         if gi == len(group_list):
-            # 先从锁定齿轮做一轮初始传播
-            sp0 = {input_id: Fraction(1, 1)}
+            # 先从锁定齿轮做一轮初始传播（整数对转速）
+            sp0 = {input_id: (1, 1)}
             touched_all = set()
-            for gid in sorted(train_gears, key=lambda x: shaft_level.get(gears[x]["shaftId"], 99)):
+            for gid in sorted(train_gears,
+                              key=lambda x: shaft_level.get(gears[x]["shaftId"], 99)):
                 if gears[gid].get("locked"):
                     ok, touched = propagate(gid, assign, sp0)
                     touched_all |= touched

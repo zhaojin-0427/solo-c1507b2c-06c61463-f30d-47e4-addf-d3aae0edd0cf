@@ -82,6 +82,14 @@ main { flex: 1; display: flex; min-height: 0; }
 }
 
 /* ---------- SVG ---------- */
+#layer-preview-baseline, #layer-preview, #layer-drag {
+  pointer-events: none;
+}
+#layer-relations { pointer-events: none; }
+#layer-relations .mesh-line,
+#layer-relations .coax-ring,
+#layer-relations [data-coax] { pointer-events: stroke; }
+
 .pitch-circle { fill: none; stroke-dasharray: 4 3; }
 .gear-body { fill: #fffdf8; stroke-width: 1.6; }
 .gear-body.internal { fill: url(#hatch); }

@@ -283,11 +283,11 @@ function render() {
     if (!A || !B) continue;
     const g0 = svgEl('g', { class: 'coax', 'data-coax': r.id }, layers.rel);
     svgEl('line', { x1: A.x, y1: A.y, x2: B.x, y2: B.y,
-      stroke: 'transparent', 'stroke-width': 3, 'pointer-events': 'stroke',
-      'data-coax': r.id, style: 'cursor:pointer' }, g0);
+      class: 'coax-ring' + (selection && selection.type === 'coax' && selection.id === r.id ? ' relation-selected' : ''),
+      'data-coax': r.id, stroke: 'transparent', 'stroke-width': 3, 'pointer-events': 'stroke' }, g0);
     svgEl('line', { x1: A.x, y1: A.y, x2: B.x, y2: B.y,
       class: 'coax-ring' + (selection && selection.type === 'coax' && selection.id === r.id ? ' relation-selected' : ''),
-      'data-coax': r.id }, g0);
+      'data-coax': r.id, 'pointer-events': 'none' }, g0);
     for (const P of [A, B])
       svgEl('circle', { cx: P.x, cy: P.y, r: 3.4, class: 'coax-ring', 'data-coax': r.id }, g0);
   }
@@ -443,7 +443,6 @@ function renderPanels() {
   renderAnalysisPanel();
   renderProps();
   renderSearchPanel();
-  renderLibrary();
 }
 
 function renderAnalysisPanel() {
@@ -667,8 +666,23 @@ function hitKind(node) {
   return null;
 }
 
+/* 松开时 e.target 在拖动中可能不是命中元素，用 elementFromPoint 兜底，
+   并按优先顺序返回（关系线可点时不应被透明齿轮热区盖住）。 */
+function hitAtPoint(clientX, clientY, prefer = null) {
+  const direct = hitKind(document.elementFromPoint(clientX, clientY));
+  if (!direct || !prefer) return direct;
+  if (direct.type === prefer) return direct;
+  const el = document.elementFromPoint(clientX, clientY);
+  if (el && el.style) el.style.pointerEvents = 'none';
+  const second = hitKind(document.elementFromPoint(clientX, clientY));
+  if (el && el.style) el.style.pointerEvents = '';
+  return second && second.type === prefer ? second : direct;
+}
+
 svg.addEventListener('pointerdown', e => {
-  svg.setPointerCapture(e.pointerId);
+  /* 不使用 setPointerCapture：捕获后 pointerup 的 target 会变成 SVG，
+     导致“点轴加齿轮/拖放建啮合”全部命中失败。 */
+  if (e.button !== 0) return;
   const w = eventWorld(e);
   const hit = hitKind(e.target);
   const m = mode();
@@ -692,9 +706,9 @@ svg.addEventListener('pointerdown', e => {
     const sid = hit.type === 'gear' ? byId(state.gears, hit.id).shaftId : hit.id;
     const s = byId(state.shafts, sid);
     selection = hit;
-    render();
     pointer = { action: s.locked ? null : 'move-shaft', sid,
       dx: w.x - s.x, dy: w.y - s.y, startX: w.sx, startY: w.sy, moved: false };
+    /* 注意：按下时不 render，避免事件目标节点被移除导致 pointerup 命中失败 */
   } else if (hit && (hit.type === 'mesh' || hit.type === 'coax')) {
     selection = hit; render();
   } else {
@@ -732,7 +746,9 @@ svg.addEventListener('pointermove', e => {
 svg.addEventListener('pointerup', e => {
   if (!pointer) return;
   const w = eventWorld(e);
-  const hit = hitKind(e.target);
+  const want = pointer.action === 'mesh' ? 'gear'
+    : pointer.action === 'coax' ? 'shaft' : null;
+  const hit = hitAtPoint(e.clientX, e.clientY, want) || hitKind(e.target);
   const p = pointer;
   pointer = null;
   clearLayer(layers.drag);
@@ -741,11 +757,13 @@ svg.addEventListener('pointerup', e => {
     if (!hit) addShaft(w.x, w.y);
     else { selection = hit; render(); }
   } else if (p.action === 'move-shaft' && !p.moved) {
-    /* 单击已有轴：若点中的是轴且该轴上无齿轮则直接加齿轮；点中齿轮只选中 */
-    if (hit && hit.type === 'shaft') {
-      const s = byId(state.shafts, hit.id);
-      if (s && !state.gears.some(g => g.shaftId === s.id)) addGearOn(s.id);
-    }
+    /* 单击已有轴：点中轴（或该轴上齿轮）且该轴尚无齿轮时直接装一个齿轮 */
+    let sid = null;
+    if (hit && hit.type === 'shaft') sid = hit.id;
+    else if (hit && hit.type === 'gear') sid = byId(state.gears, hit.id).shaftId;
+    const s = sid && byId(state.shafts, sid);
+    if (s && !state.gears.some(g => g.shaftId === s.id)) addGearOn(s.id);
+    else if (hit) { selection = hit; render(); }
   } else if (p.action === 'move-shaft' && p.moved) {
     markDirty();
   } else if (p.action === 'mesh' && hit && hit.type === 'gear') {
@@ -786,6 +804,16 @@ svg.addEventListener('wheel', e => {
   view.panY = sy - wy * u1;
   applyWorldTransform();
 }, { passive: false });
+
+/* 指针在 SVG 外松开也要结束手势（避免拖轴/拖连线卡住） */
+document.addEventListener('pointerup', e => {
+  if (!pointer) return;
+  if (svg.contains(e.target)) return;  // SVG 自身的 pointerup 已处理
+  const p = pointer;
+  pointer = null;
+  clearLayer(layers.drag);
+  if (p.action === 'move-shaft' && p.moved) markDirty();
+});
 
 /* 单击已有轴的“加齿轮”快捷：双击轴 */
 svg.addEventListener('dblclick', e => {
@@ -977,6 +1005,7 @@ async function loadAlternative(id) {
 async function setBaseline(id) {
   await fetch(`/api/baseline/${id}`, { method: 'POST' });
   await reloadProjectMeta();
+  refreshLibrary();
   render();
 }
 async function deleteAlternative(id) {
@@ -999,6 +1028,13 @@ $('#btn-save-alt').addEventListener('click', async () => {
   $('#alt-name').value = '';
   refreshLibrary();
   flashHint('方案已另存到 SQLite');
+});
+
+$('#btn-clear-baseline').addEventListener('click', async () => {
+  await fetch('/api/baseline/clear', { method: 'POST' });
+  await reloadProjectMeta();
+  refreshLibrary();
+  render();
 });
 
 /* ---------------- 持久化 ---------------- */
