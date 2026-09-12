@@ -155,7 +155,10 @@ function analyzeLocal(st, centerTol = CENTER_TOL) {
     const actual = Math.hypot(A.x - B.x, A.y - B.y);
     let expected = null, deviation = null;
     if (Number.isInteger(ga.z) && Number.isInteger(gb.z) && ga.module > 0) {
-      expected = internal ? ga.module * Math.abs(ga.z - gb.z) / 2 : ga.module * (ga.z + gb.z) / 2;
+      // 理论中心距随变位和变化（xΣ=0 时即标准中心距），与后端 meshing.expected_center 一致
+      expected = Involute.expectedCenter(ga, gb);
+      if (expected == null)
+        expected = internal ? ga.module * Math.abs(ga.z - gb.z) / 2 : ga.module * (ga.z + gb.z) / 2;
       deviation = actual - expected;
       if (Math.abs(deviation) > centerTol)
         add('error', 'CENTER_DISTANCE',
@@ -426,8 +429,9 @@ const layers = {
 
 function gearRadii(g) {
   const rp = g.module * g.z / 2;
-  if (g.internal) return { rp, outer: rp + 1.25 * g.module, tip: rp - g.module, internal: true };
-  return { rp, outer: rp + g.module, root: Math.max(0.5, rp - 1.25 * g.module), internal: false };
+  const ha = g.ha ?? 1, c = g.c ?? 0.25, x = g.x ?? 0;
+  if (g.internal) return { rp, outer: g.module * (g.z / 2 + ha + c + x), tip: g.module * (g.z / 2 - ha + x), internal: true };
+  return { rp, outer: g.module * (g.z / 2 + ha + x), root: Math.max(0.5, g.module * (g.z / 2 - ha - c + x)), internal: false };
 }
 
 function clearLayer(l) { while (l.firstChild) l.removeChild(l.firstChild); }
@@ -1185,7 +1189,7 @@ function addShaft(x, y) {
 }
 function addGearOn(sid) {
   const g = { id: uid('g'), shaftId: sid, name: '', z: 24, module: 1,
-    pressureAngle: 20, internal: false, locked: false };
+    pressureAngle: 20, internal: false, locked: false, ha: 1, c: 0.25, x: 0 };
   state.gears.push(g);
   selection = { type: 'gear', id: g.id };
   markDirty(); render();
@@ -1755,6 +1759,12 @@ function normalizeState(st) {
   st.coaxRelations = st.coaxRelations || [];
   st.planets = st.planets || [];
   if (st.inputRpm == null) st.inputRpm = 60;
+  for (const g of st.gears) {
+    /* 旧项目没有齿形参数时按标准齿形打开 */
+    if (g.ha == null) g.ha = 1.0;
+    if (g.c == null) g.c = 0.25;
+    if (g.x == null) g.x = 0.0;
+  }
   for (const p of st.planets) {
     if (p.phase == null) p.phase = 0;
     for (const k of ['sunShaftId', 'ringShaftId', 'carrierShaftId'])

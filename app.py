@@ -8,6 +8,7 @@ import time
 from flask import Flask, g, jsonify, render_template, request
 
 import kinematics
+import meshing
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "geartrain.db")
@@ -132,6 +133,31 @@ def api_search_planets():
     body = request.get_json(force=True)
     try:
         return jsonify(kinematics.search_planets(body))
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"results": [], "note": "搜索参数有误：%s" % exc}), 400
+
+
+@app.post("/api/mesh-check")
+def api_mesh_check():
+    """渐开线啮合校核：按实际中心距计算工作压力角、啮合线、重合度与滑动率。"""
+    body = request.get_json(force=True)
+    try:
+        return jsonify(meshing.check_pair(
+            body.get("gearA", {}), body.get("gearB", {}),
+            float(body.get("center", 0)),
+            float(body.get("epsMin", meshing.EPS_MIN_DEFAULT))))
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "issues": [
+            {"severity": "error", "code": "BAD_REQUEST",
+             "message": "校核参数有误：%s" % exc}]}), 400
+
+
+@app.post("/api/mesh-shifts")
+def api_mesh_shifts():
+    """成对变位与可调整中心距搜索。"""
+    body = request.get_json(force=True)
+    try:
+        return jsonify(meshing.search_shifts(body))
     except Exception as exc:  # noqa: BLE001
         return jsonify({"results": [], "note": "搜索参数有误：%s" % exc}), 400
 

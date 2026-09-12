@@ -25,6 +25,8 @@ from collections import defaultdict, deque
 from fractions import Fraction
 from math import gcd, hypot
 
+import meshing
+
 CENTER_TOL = 0.05  # mm，中心距默认容差
 
 
@@ -238,7 +240,10 @@ def analyze(state: dict, center_tol: float = CENTER_TOL) -> dict:
         A, B = shafts[sa], shafts[sb]
         actual = hypot(A["x"] - B["x"], A["y"] - B["y"])
         if isinstance(za, int) and isinstance(zb, int) and isinstance(m, (int, float)):
-            expected = m * (za + zb) / 2 if not internal else m * abs(za - zb) / 2
+            # 理论中心距随变位和变化（xΣ=0 时即标准中心距）
+            expected = meshing.expected_center(ga, gb)
+            if expected is None:
+                expected = m * (za + zb) / 2 if not internal else m * abs(za - zb) / 2
             dev = actual - expected
             if abs(dev) > center_tol:
                 add("error", "CENTER_DISTANCE",
@@ -477,8 +482,10 @@ def _mesh_edges_geo(state, gears, shafts):
         if not isinstance(ga.get("z"), int) or not isinstance(gb.get("z"), int):
             continue
         internal = bool(ga.get("internal") or gb.get("internal"))
-        req = ga["module"] * (ga["z"] + gb["z"]) / 2 if not internal \
-            else ga["module"] * abs(ga["z"] - gb["z"]) / 2
+        req = meshing.expected_center(ga, gb)
+        if req is None:
+            req = ga["module"] * (ga["z"] + gb["z"]) / 2 if not internal \
+                else ga["module"] * abs(ga["z"] - gb["z"]) / 2
         out.append((sa, sb, req, internal))
     return out
 
@@ -700,7 +707,10 @@ def search(params: dict) -> dict:
             if sa in locked_pos and sb in locked_pos:
                 A, B = shafts[sa], shafts[sb]
                 dist = hypot(A["x"] - B["x"], A["y"] - B["y"])
-                req = ma * (za + zb) / 2 if not internal else ma * abs(za - zb) / 2
+                req = meshing.expected_center(dict(ga, z=za, module=ma),
+                                              dict(gb, z=zb, module=mb))
+                if req is None:
+                    req = ma * (za + zb) / 2 if not internal else ma * abs(za - zb) / 2
                 if abs(dist - req) > center_tol:
                     return False
         return True
@@ -772,7 +782,10 @@ def search(params: dict) -> dict:
             ga, gb = gears[a], gears[b]
             m, za, zb = assign[a][0], assign[a][1], assign[b][1]
             internal = bool(ga.get("internal") or gb.get("internal"))
-            edge_req[k] = m * (za + zb) / 2 if not internal else m * abs(za - zb) / 2
+            req = meshing.expected_center(dict(ga, z=za, module=m),
+                                          dict(gb, z=zb, module=m))
+            edge_req[k] = req if req is not None else \
+                (m * (za + zb) / 2 if not internal else m * abs(za - zb) / 2)
         for parent, child, k in tree_edges:
             if child in pos or parent not in pos:
                 continue
