@@ -367,6 +367,9 @@ function analyzeLocal(st, centerTol = CENTER_TOL) {
     if (info.speeds.s) L = bLcm(L, fMul(fr(info.p.zS), info.speeds.s).d);
     if (info.speeds.r) L = bLcm(L, fMul(fr(info.p.zR), info.speeds.r).d);
     if (info.spin) L = bLcm(L, fMul(fr(info.p.zP), info.spin).d);
+    // 均布行星轴位恢复：行星架转 n_c·L 须为 1/n 的整数倍，即 n·n_c·L 为整数
+    if (info.speeds.c && Number.isInteger(info.p.count))
+      L = bLcm(L, fMul(fr(info.p.count), info.speeds.c).d);
   }
   const shaftTurns = {};
   for (const [sid, v] of speeds) shaftTurns[sid] = { s: fStr(fMul(fr(L), v)), v: Number(L) * fNum(v) };
@@ -676,8 +679,8 @@ function updatePlanetTransforms() {
     if (!grp) continue;
     grp.setAttribute('transform', `translate(${p.x || 0} ${p.y || 0})`);
     const ang = mem => {
-      const sp = info.speeds[mem];
-      return sp ? sp.v * theta : 0;
+      const sp = info.speeds[mem];   // 原始 BigInt 分数 {n,d}
+      return sp ? fNum(sp) * theta : 0;
     };
     const rNode = grp.querySelector('[data-pl-rotor="r"]');
     const sNode = grp.querySelector('[data-pl-rotor="s"]');
@@ -685,11 +688,12 @@ function updatePlanetTransforms() {
     if (rNode) rNode.setAttribute('transform', `rotate(${ang('r')})`);
     if (sNode) sNode.setAttribute('transform', `rotate(${ang('s')})`);
     if (cNode) cNode.setAttribute('transform', `rotate(${ang('c')})`);
-    if (info.spin) {
-      const spinA = fNum(info.spin) * theta;
-      grp.querySelectorAll('[data-pl-planet-spin]').forEach(n =>
-        n.setAttribute('transform', `rotate(${spinA})`));
-    }
+    // 行星轮自转子组嵌套在公转的行星架组内，须用相对架的自转 n_p − n_c，
+    // 使其在固定坐标系中的绝对姿态恰好为 Willis 给出的 n_p。
+    const carrierV = info.speeds.c ? fNum(info.speeds.c) : 0;
+    const spinRel = info.spin ? (fNum(info.spin) - carrierV) * theta : 0;
+    grp.querySelectorAll('[data-pl-planet-spin]').forEach(n =>
+      n.setAttribute('transform', `rotate(${spinRel})`));
   }
 }
 
@@ -870,6 +874,7 @@ function renderAnalysisPanel() {
       if (sp) {
         const node = label === '太阳轮' ? pNode(p.id, 's') : label === '内齿圈' ? pNode(p.id, 'r')
           : label === '行星架（公转）' ? pNode(p.id, 'c') : null;
+        const sv = fNum(sp);
         h('td', {}, tr, fStr(sp));
         h('td', {}, tr, node && analysis.rpms[node] != null ? analysis.rpms[node].toFixed(2) : '—');
         let turns = '—';
@@ -877,7 +882,7 @@ function renderAnalysisPanel() {
         else if (label === '行星轮（自转）')
           turns = fStr(fMul(fr(analysis.cycle.inputTurns), sp));
         h('td', {}, tr, turns);
-        h('td', { class: sp.v >= 0 ? 'cw' : 'ccw' }, tr, sp.v >= 0 ? '↻ 正' : '↺ 反');
+        h('td', { class: sv >= 0 ? 'cw' : 'ccw' }, tr, sv >= 0 ? '↻ 正' : '↺ 反');
       } else h('td', { colspan: 4, class: 'muted' }, tr, '未连入动力链');
     }
   }
@@ -1039,6 +1044,12 @@ function renderPlanetPanel() {
   }
 
   /* 固定/输入/输出角色：选择时自动对调，保证三者互不相同 */
+  const attKey = { s: 'sunShaftId', r: 'ringShaftId', c: 'carrierShaftId' };
+  const ownNode = mem => pNode(p.id, mem);
+  const belongsToThis = id => P_MEMBERS.some(mem => id === ownNode(mem));
+  // 角色改变后同步全局 IO：独立行星级直接指向构件；接入现有轴的成员指向真实轴；
+  // 但绝不覆盖已有的外部轴输入（如把太阳轮接到原齿轮列输出轴后，整体从原输入轴算起）
+  let syncGlobalIOForRole = () => {};
   const roleBox = h('div', { class: 'pl-roles' }, body);
   const roleRow = (role, label, val, setter) => {
     const f = h('div', { class: 'field' }, roleBox);
@@ -1054,24 +1065,24 @@ function renderPlanetPanel() {
       if (p[others[0]] === v) p[others[0]] = p[role];
       else if (p[others[1]] === v) p[others[1]] = p[role];
       setter(v);
-      syncGlobalIO();
+      syncGlobalIOForRole();
       recompute();
     });
   };
   roleRow('fixed', '固定件（速度 0）', p.fixed, v => { p.fixed = v; });
   roleRow('input', '输入件', p.input, v => { p.input = v; });
   roleRow('output', '输出件', p.output, v => { p.output = v; });
-  // 角色改变后把全局输入/输出指向对应构件伪节点（除非该成员已接入现有轴）
-  const syncGlobalIO = () => {
-    const attKey = { s: 'sunShaftId', r: 'ringShaftId', c: 'carrierShaftId' };
-    const ia = p[attKey[p.input]];
-    const oa = p[attKey[p.output]];
-    state.inputId = ia || pNode(p.id, p.input);
-    state.outputId = oa || pNode(p.id, p.output);
+  // 角色改变时同步全局 IO：仅当全局 IO 未被既有齿轮列占用（独立行星级），
+  // 或当前本就指向该行星级构件时才更新；接入轴后输入保持在原外部轴。
+  syncGlobalIOForRole = () => {
+    const inAtt = p[attKey[p.input]], outAtt = p[attKey[p.output]];
+    if (state.inputId == null || belongsToThis(state.inputId))
+      state.inputId = inAtt || ownNode(p.input);
+    if (state.outputId == null || belongsToThis(state.outputId))
+      state.outputId = outAtt || ownNode(p.output);
   };
-  syncGlobalIO();
   h('p', { class: 'muted small' }, body,
-    '设定输入/输出件会把全局输入/输出指向该构件；若该成员已接入现有轴，则指向真实轴。');
+    '独立行星级：全局输入/输出随角色指向构件；把构件接入现有轴后，全局输入/输出保持在原轮系轴上，整体传动比自动串联重算。');
 
   /* 装配条件快览 */
   const G = planetGeom(p);
@@ -1099,7 +1110,9 @@ function renderPlanetPanel() {
     h('label', {}, f, `${P_LABEL[mem]}与哪根轴同速（可空）`);
     const s = h('select', { onchange: e => {
       p[key] = e.target.value || null;
-      syncGlobalIO();
+      // 接轴只建立同速链接，绝不抢占全局输入（否则把太阳轮接到原齿轮列输出轴后，
+      // 会把该轴误当输入源，只显示级比 1/4）。输出成员接入时全局输出落到真实轴。
+      if (p[key] && state.outputId === ownNode(mem)) state.outputId = p[key];
       recompute();
     } }, f);
     h('option', { value: '' }, s, '— 不接入 —');
@@ -1120,17 +1133,8 @@ function renderPlanetPanel() {
     }
     recompute();
   } }, attBtns, '吸附接入轴到中心');
-  h('button', { onclick: () => {
-    // 将全局输入/输出切到接入轴（动力经真实轴传入）
-    if (p.sunShaftId && p.input === 's') state.inputId = p.sunShaftId;
-    if (p.ringShaftId && p.input === 'r') state.inputId = p.ringShaftId;
-    if (p.carrierShaftId && p.input === 'c') state.inputId = p.carrierShaftId;
-    if (p.sunShaftId && p.output === 's') state.outputId = p.sunShaftId;
-    if (p.ringShaftId && p.output === 'r') state.outputId = p.ringShaftId;
-    if (p.carrierShaftId && p.output === 'c') state.outputId = p.carrierShaftId;
-    recompute();
-    flashHint('全局输入/输出已改为接入轴，整体传动比按真实轴重算');
-  } }, attBtns, '用接入轴作全局输入/输出');
+  h('p', { class: 'muted small' }, body,
+    '接入后若全局输入仍为原齿轮列的轴，整体传动比会从该轴串到行星级输出（如 1/9 × 1/4 = 1/36）。');
 
   const posRow = h('div', { class: 'field-row' }, body);
   labeledInput(posRow, '中心 X (mm)', p.x, v => { p.x = parseFloat(v) || 0; recompute(); });
@@ -1197,6 +1201,11 @@ function addPlanet(x, y) {
   state.planets.push(p);
   selection = { type: 'planet', id: p.id };
   selectedPlanetId = p.id;
+  // 放置时：只有全局 IO 未被既有轮系占用，才让新行星级充当动力源；
+  // 已存在齿轮列时保留其输入轴，行星级经接轴串联。
+  if (state.inputId == null) state.inputId = pNode(p.id, p.input);
+  if (state.outputId == null) state.outputId = pNode(p.id, p.output);
+  resetMotion();
   markDirty(); render();
   switchTab('planet');
   return p;

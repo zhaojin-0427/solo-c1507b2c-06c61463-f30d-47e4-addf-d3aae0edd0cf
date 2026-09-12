@@ -416,8 +416,11 @@ def analyze(state: dict, center_tol: float = CENTER_TOL) -> dict:
             info["speeds"][mem] = fj(speeds[node]) if node in speeds else None
         info["spin"] = fj(spin) if spin is not None else None
 
-    # --- 整列复位循环：每只齿轮走过的齿距数 z·n·L 必须为整数；
-    #     行星轮自转另计（公转的整数只影响回到同一轴位，不恢复齿相位） ---
+    # --- 整列复位循环 ---
+    # 普通齿轮/太阳轮/内齿圈：走过的齿距数 z·n·L 必须为整数；
+    # 行星轮按绝对自转 n_p（行星架公转不恢复其齿相位）；
+    # 均布行星轴位恢复：行星架转过的角度须为 2π/n 的整数倍，即 n·n_c·L 为整数
+    # （n 个相同行星轮虽可互换到视觉重合，但轴位与啮合相位需回到初始槽位）。
     denoms = []
     for gid, g in gears.items():
         sid = g.get("shaftId")
@@ -434,6 +437,10 @@ def analyze(state: dict, center_tol: float = CENTER_TOL) -> dict:
                            info["nodes"]["s"], info["nodes"]["c"])
         if spin is not None:
             denoms.append((info["zP"] * spin).denominator)
+        nc = speeds.get(info["nodes"]["c"])
+        count = info.get("count")
+        if nc is not None and isinstance(count, int) and 2 <= count <= 6:
+            denoms.append((count * nc).denominator)
     L = 1
     for d in denoms:
         L = lcm(L, d)
@@ -1127,7 +1134,8 @@ def search_planets(params: dict) -> dict:
                         if net < clearance:
                             continue
                         # 复位循环：以输入成员转 1 转为基准，求 zS·n_s、zR·n_r、
-                        # zP·n_p 同时为整数所需的输入转数
+                        # zP·n_p（行星绝对自转）同时为整数，且均布行星轴位恢复
+                        # （n·n_c 为整数）所需的最小输入转数
                         speeds = {}
                         speeds[cfg["input"]] = Fraction(1)
                         speeds[cfg["fixed"]] = Fraction(0)
@@ -1137,6 +1145,7 @@ def search_planets(params: dict) -> dict:
                         for z, mem in ((zs, "s"), (zr, "r")):
                             L = lcm(L, (z * speeds[mem]).denominator)
                         L = lcm(L, (zp * spin).denominator)
+                        L = lcm(L, (n * speeds["c"]).denominator)
                         results.append({
                             "module": mdl, "zS": zs, "zP": zp, "zR": zr,
                             "count": n,
