@@ -72,6 +72,18 @@ main { flex: 1; display: flex; min-height: 0; }
   var(--bg); }
 #canvas.mode-mesh { cursor: copy; }
 #canvas.mode-coax { cursor: alias; }
+#canvas.mode-planet { cursor: cell; }
+
+#angle-box {
+  position: absolute; left: 12px; top: 10px;
+  background: rgba(255,253,248,.92);
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 7px 12px 6px; width: 248px;
+  box-shadow: 0 2px 8px rgba(60,50,30,.08);
+}
+#angle-box .ab-head { display: flex; justify-content: space-between; font-weight: 600; }
+#angle-box .ab-row { font-size: 11px; color: var(--muted); margin-top: 2px; }
+#angle-box input[type=range] { width: 100%; margin: 2px 0 0; accent-color: var(--accent); }
 
 #hint {
   position: absolute; left: 12px; bottom: 10px;
@@ -85,6 +97,8 @@ main { flex: 1; display: flex; min-height: 0; }
 #layer-preview-baseline, #layer-preview, #layer-drag {
   pointer-events: none;
 }
+#layer-planets { pointer-events: none; }
+#layer-planets [data-planet-hit] { pointer-events: all; cursor: pointer; }
 #layer-relations { pointer-events: none; }
 #layer-relations .mesh-line,
 #layer-relations .coax-ring,
@@ -117,6 +131,69 @@ main { flex: 1; display: flex; min-height: 0; }
 .preview-baseline { fill: rgba(46,125,50,.06); stroke: var(--ok); stroke-dasharray: 2 5; }
 .edge-active { stroke: var(--hl) !important; stroke-width: 3 !important; }
 .edge-pending { opacity: .35; }
+
+/* ---------- 行星轮系 ---------- */
+.planet-stage { cursor: pointer; }
+.planet-selected .pl-ring-outer { stroke: var(--hl); stroke-width: 0.8; }
+.planet-title {
+  font-size: 11px; fill: var(--ink); text-anchor: middle;
+  font-weight: 700; pointer-events: none;
+}
+.planet-warn { font-size: 10px; fill: var(--err); text-anchor: middle; pointer-events: none; }
+.planet-badring { fill: none; stroke: var(--err); stroke-dasharray: 3 2; stroke-width: 0.5; }
+
+.pl-ring-outer {
+  fill: #efe9dd; stroke: var(--gear-in); stroke-width: 1.2;
+  pointer-events: all;
+}
+.pl-ring-tip {
+  fill: #f8f4ea; stroke: #8d6e63; stroke-width: 0.5;
+  pointer-events: all;
+}
+.pl-pitch { pointer-events: none; }
+.pl-orbit {
+  fill: none; stroke: var(--accent); stroke-width: 0.3;
+  stroke-dasharray: 2 2; opacity: .75; pointer-events: none;
+}
+.pl-arm { stroke: #9aa7b8; stroke-width: 0.9; pointer-events: none; }
+.pl-axle { fill: #6b6357; stroke: #fffdf8; stroke-width: 0.35; pointer-events: none; }
+.pl-axle.pl-center { fill: var(--hl); }
+.pl-sun-body {
+  fill: #fffdf8; stroke: var(--gear); stroke-width: 1.2;
+  pointer-events: all;
+}
+.pl-planet-body {
+  fill: #fffdf8; stroke: var(--gear); stroke-width: 0.9;
+  pointer-events: all; cursor: pointer;
+}
+.pl-spinmark { pointer-events: none; }
+.pl-badge {
+  font-size: 8.5px; font-weight: 700; text-anchor: middle;
+  pointer-events: none; paint-order: stroke; stroke: #f8f4ea; stroke-width: 1.6px;
+}
+.pl-badge-s { fill: var(--ok); }
+.pl-badge-r { fill: var(--gear-in); }
+.pl-badge-c { fill: var(--accent); }
+
+.pl-cand-ring, .pl-cand-sun, .pl-cand-planet {
+  fill: none; stroke: var(--accent); stroke-width: 0.5; stroke-dasharray: 3 2;
+  pointer-events: none;
+}
+.pl-cand-orbit { fill: none; stroke: var(--accent); stroke-width: 0.3; opacity: .6; pointer-events: none; }
+.pl-cand-label {
+  font-size: 9.5px; fill: var(--accent); text-anchor: middle;
+  pointer-events: none; font-weight: 600;
+}
+
+.pl-roles { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+.pl-facts {
+  background: #f5f2ea; border-radius: 6px; padding: 6px 10px;
+  font-size: 12px; display: flex; flex-direction: column; gap: 2px;
+}
+.ok-text { color: var(--ok); }
+.err-text { color: var(--err); }
+#planet-speeds h3 { cursor: pointer; }
+#planet-speeds h3:hover { color: var(--accent); }
 
 /* ---------- 侧栏 ---------- */
 #side {

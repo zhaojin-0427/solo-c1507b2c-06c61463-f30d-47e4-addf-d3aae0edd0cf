@@ -127,6 +127,15 @@ def api_search():
         return jsonify({"results": [], "note": "搜索参数有误：%s" % exc}), 400
 
 
+@app.post("/api/search-planets")
+def api_search_planets():
+    body = request.get_json(force=True)
+    try:
+        return jsonify(kinematics.search_planets(body))
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"results": [], "note": "搜索参数有误：%s" % exc}), 400
+
+
 @app.post("/api/alternatives")
 def api_create_alt():
     body = request.get_json(force=True)

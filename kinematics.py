@@ -7,9 +7,15 @@
   "gears":  [{"id","shaftId","name","z","module","pressureAngle","internal","locked"}],
   "meshes": [{"id","gearA","gearB"}],          # 外/内啮合由齿轮 internal 标志推断
   "coaxRelations": [{"id","shaftA","shaftB"}], # 同轴（同位、各自转速独立）
+  "planets": [{"id","name","module","zS","zP","zR","count","phase",
+               "fixed","input","output",       # s=太阳轮 r=内齿圈 c=行星架
+               "x","y",
+               "sunShaftId","ringShaftId","carrierShaftId"}],  # 可空：接入现有轴
   "inputId","outputId","inputRpm"
 }
 长度单位均为 mm；转速为相对输入轴的分数（输入轴 = 1 转）。
+行星级成员在转速图中以伪节点 "<id>:s|r|c" 出现；行星轮自转速度单独按
+n_p = n_c − (zS/zP)(n_s − n_c) 计算。
 """
 from __future__ import annotations
 
@@ -39,6 +45,127 @@ def _gname(g: dict) -> str:
 
 def _sname(s: dict) -> str:
     return s.get("name") or ("轴%s" % s.get("id"))
+
+
+# ----------------------------- 行星轮系 -----------------------------
+
+P_MEMBERS = ("s", "r", "c")
+P_NAMES = {"s": "太阳轮", "r": "内齿圈", "c": "行星架"}
+
+
+def p_nodes(pid):
+    return [pid + ":" + m for m in P_MEMBERS]
+
+
+def planet_geom(p):
+    """返回行星级几何数据；齿数/模数非法时返回 None。"""
+    zs, zp, zr = p.get("zS"), p.get("zP"), p.get("zR")
+    m = p.get("module")
+    if not all(isinstance(z, int) and z > 0 for z in (zs, zp, zr)):
+        return None
+    if not isinstance(m, (int, float)) or m <= 0:
+        return None
+    orbit = m * (zs + zp) / 2.0          # 行星轴轨迹半径
+    rp = m * zp / 2.0                    # 行星轮节圆/外圆（齿顶按 +m）
+    return {
+        "zs": zs, "zp": zp, "zr": zr, "m": m,
+        "orbit": orbit, "rp": rp,
+        "ringTip": m * (zr - 2) / 2.0,   # 内齿圈齿顶圆（内边界）
+        "ringOuter": m * (zr + 2.5) / 2.0,
+        "sunTip": m * (zs + 2) / 2.0,
+        "chord": 2.0 * orbit * math.sin(math.pi / max(1, int(p.get("count", 1)))),
+    }
+
+
+def planet_spin(zs, zp, speeds, ns_id, nc_id):
+    """行星轮绝对自转速度 n_p = n_c − (zS/zP)(n_s − n_c)。"""
+    if ns_id not in speeds or nc_id not in speeds:
+        return None
+    return speeds[nc_id] - Fraction(zs, zp) * (speeds[ns_id] - speeds[nc_id])
+
+
+def _planet_checks(p, shafts, gears):
+    """行星级装配/几何诊断，返回 (issues, geom_or_None)。"""
+    pid = p.get("id")
+    issues = []
+    name = p.get("name") or ("行星级 %s" % pid)
+    n = p.get("count")
+    if not isinstance(n, int) or not 2 <= n <= 6:
+        issues.append(("error", "PLANET_COUNT",
+                       "「%s」行星轮数量必须为 2～6 个" % name, {"planet": pid}))
+    zs, zp, zr = p.get("zS"), p.get("zP"), p.get("zR")
+    m = p.get("module")
+    for key, label in (("zS", "太阳轮齿数"), ("zP", "行星轮齿数"), ("zR", "内齿圈齿数")):
+        if not isinstance(p.get(key), int) or p.get(key) <= 0:
+            issues.append(("error", "BAD_PLANET",
+                           "「%s」%s必须为正整数" % (name, label), {"planet": pid}))
+    if not isinstance(m, (int, float)) or m <= 0:
+        issues.append(("error", "BAD_PLANET",
+                       "「%s」模数必须为正数" % name, {"planet": pid}))
+    if issues:
+        return issues, None
+
+    if zr != zs + 2 * zp:
+        issues.append(("error", "WILLIS_GEOM",
+                       "「%s」齿数不满足 z圈 = z太阳 + 2z行星：%s ≠ %s + 2×%s = %s"
+                       % (name, zr, zs, zp, zs + 2 * zp), {"planet": pid}))
+    geom = planet_geom(p)
+    if isinstance(n, int) and 2 <= n <= 6 and zr == zs + 2 * zp:
+        if (zs + zr) % n != 0:
+            issues.append(("error", "ASSEMBLY",
+                           "「%s」均布装配条件不满足：(z太阳+z圈)/n = (%s+%s)/%s 非整数，"
+                           "第 %s 只行星轮无法在均布相位与太阳轮、内齿圈同时对齿"
+                           % (name, zs, zr, n, n), {"planet": pid}))
+        net = geom["chord"] - m * (zp + 2)
+        if net <= 0:
+            issues.append(("error", "PLANET_COLLIDE",
+                           "「%s」相邻行星轮顶圆干涉：轴间距 %.2f mm，需大于齿顶圆直径 %.2f mm"
+                           % (name, geom["chord"], m * (zp + 2)), {"planet": pid}))
+        elif net < 0.15 * m:
+            issues.append(("warning", "PLANET_TIGHT",
+                           "「%s」行星轮净距仅 %.2f mm（< 0.15m），加工后易蹭齿"
+                           % (name, net), {"planet": pid}))
+        if geom["sunTip"] >= geom["ringTip"]:
+            issues.append(("error", "COAX_CONFLICT",
+                           "「%s」同轴尺寸冲突：太阳轮齿顶圆 %.2f mm 已触及内齿圈齿顶圆 %.2f mm"
+                           % (name, geom["sunTip"], geom["ringTip"]), {"planet": pid}))
+
+    # 接入轴：存在性、同轴度、与齿圈内腔的尺寸冲突
+    att = {}
+    for mem, key in (("s", "sunShaftId"), ("r", "ringShaftId"), ("c", "carrierShaftId")):
+        sid = p.get(key)
+        if sid is not None:
+            if sid not in shafts:
+                issues.append(("error", "BROKEN_PLANET_SHAFT",
+                               "「%s」%s接入的轴已被删除" % (name, P_NAMES[mem]),
+                               {"planet": pid}))
+            else:
+                att[mem] = sid
+    px, py = float(p.get("x", 0) or 0), float(p.get("y", 0) or 0)
+    for mem, sid in att.items():
+        A = shafts[sid]
+        d = hypot(A["x"] - px, A["y"] - py)
+        if geom and d > 0.05:
+            issues.append(("warning", "PLANET_OFFSET",
+                           "「%s」%s接入的轴「%s」偏离行星级中心 %.2f mm，可用「吸附轴位」对齐"
+                           % (name, P_NAMES[mem], _sname(shafts[sid]), d),
+                           {"planet": pid, "shaft": sid}))
+    if geom:
+        for mem, sid in att.items():
+            for g in gears.values():
+                if g.get("shaftId") != sid or g.get("internal"):
+                    continue
+                if not isinstance(g.get("z"), int) or not isinstance(g.get("module"), (int, float)):
+                    continue
+                out = g["module"] * (g["z"] + 2) / 2.0
+                if mem == "r":
+                    continue  # 与内齿圈同速的外齿轮在齿圈外，不查内腔
+                if out >= geom["ringTip"] - m:
+                    issues.append(("error", "COAX_CONFLICT",
+                                   "「%s」轴「%s」上的「%s」齿顶圆半径 %.2f mm 超过内齿圈内腔 %.2f mm"
+                                   % (name, _sname(shafts[sid]), _gname(g), out, geom["ringTip"]),
+                                   {"planet": pid, "shaft": sid, "gear": g.get("id")}))
+    return issues, geom
 
 
 # ----------------------------- 运动学分析 -----------------------------
@@ -154,16 +281,85 @@ def analyze(state: dict, center_tol: float = CENTER_TOL) -> dict:
                 "同轴关系要求「%s」与「%s」同心，当前相距 %.3f mm"
                 % (_sname(A), _sname(B), d), coax=rid)
 
+    # --- 行星轮系：Willis 约束 ---
+    # 伪节点 "<pid>:s/r/c"；固定件与“接入轴”以系数 1 耦合；
+    # 活动的 s/r/c 三者间按转化轮系传动比 (n_s-n_c)/(n_r-n_c) = -z_r/z_s 建边。
+    planet_infos = []
+    planets = state.get("planets", [])
+    for p in planets:
+        pid = p.get("id")
+        pissues, geom = _planet_checks(p, shafts, gears)
+        for sev, code, msg, refs in pissues:
+            add(sev, code, msg, **refs)
+        fixed, inp, outp = p.get("fixed"), p.get("input"), p.get("output")
+        valid_role = set(x for x in (fixed, inp, outp) if x in P_MEMBERS)
+        if len(set((fixed, inp, outp))) != 3 or len(valid_role) != 3:
+            add("error", "BAD_PLANET_ROLE",
+                "「%s」固定件、输入件、输出件必须分别指定为太阳轮/内齿圈/行星架且互不相同"
+                % (p.get("name") or ("行星级 %s" % pid)), planet=pid)
+        ns_id, nr_id, nc_id = p_nodes(pid)
+        for node in (ns_id, nr_id, nc_id):
+            adj[node] = []
+        if geom is None:
+            planet_infos.append({"id": pid, "speeds": {}, "spin": None, "orbit": None})
+            continue
+        zs, zr = geom["zs"], geom["zr"]
+
+        def wadd(a_node, b_node, fact):
+            """双向 Willis 边（转速图）。"""
+            adj[a_node].append((b_node, fact, "willis:" + pid))
+            adj[b_node].append((a_node, Fraction(1, 1) / fact, "willis:" + pid))
+
+        if fixed == "r":      # n_s/n_c = (zs+zr)/zs
+            wadd(nc_id, ns_id, Fraction(zs + zr, zs))
+        elif fixed == "s":    # n_r/n_c = (zs+zr)/zr
+            wadd(nc_id, nr_id, Fraction(zs + zr, zr))
+        elif fixed == "c":    # n_r/n_s = -zs/zr
+            wadd(ns_id, nr_id, Fraction(-zs, zr))
+
+        # 接入现有轴：伪节点与轴同速（系数 1，双向）
+        for mem, key, node in (("s", "sunShaftId", ns_id),
+                               ("r", "ringShaftId", nr_id),
+                               ("c", "carrierShaftId", nc_id)):
+            sid = p.get(key)
+            if sid in shafts:
+                adj[node].append((sid, Fraction(1, 1), "pllink:" + pid))
+                adj[sid].append((node, Fraction(1, 1), "pllink:" + pid))
+
+        planet_infos.append({
+            "id": pid, "name": p.get("name") or "",
+            "fixed": fixed, "input": inp, "output": outp,
+            "zS": zs, "zP": geom["zp"], "zR": zr, "module": geom["m"],
+            "count": p.get("count"), "x": p.get("x", 0), "y": p.get("y", 0),
+            "phase": p.get("phase", 0) or 0,
+            "nodes": {"s": ns_id, "r": nr_id, "c": nc_id},
+            "orbit": geom["orbit"], "ringTip": geom["ringTip"],
+            "ringOuter": geom["ringOuter"], "chord": geom["chord"],
+            "speeds": {}, "spin": None,
+        })
+
     # --- 转速传播（BFS，分数精确） ---
+    # 多源：输入轴/输入成员速度 1；各行星级固定成员（及接入轴）速度 0。
     input_id, output_id = state.get("inputId"), state.get("outputId")
     speeds: dict = {}
     conflicts: set = set()
+    seeds = []
+    for p in state.get("planets", []):
+        pid = p.get("id")
+        if p.get("fixed") in P_MEMBERS:
+            seeds.append((pid + ":" + p["fixed"], Fraction(0)))
 
-    if not input_id or input_id not in shafts:
-        add("info", "NO_INPUT", "尚未指定输入轴（在轴属性中设置）")
-    else:
-        speeds[input_id] = Fraction(1, 1)
-        q = deque([input_id])
+    def bfs(seed_id, seed_val):
+        if seed_id not in adj:
+            return
+        if seed_id in speeds:
+            if speeds[seed_id] != seed_val:
+                add("error", "LOCKED_TRAIN",
+                    "输入件与固定件被连成一体（%s 同时被要求转速 1 和 0），轮系锁死"
+                    % seed_id, shaft=seed_id)
+            return
+        speeds[seed_id] = seed_val
+        q = deque([seed_id])
         while q:
             cur = q.popleft()
             for nb, fact, eid in adj[cur]:
@@ -173,36 +369,71 @@ def analyze(state: dict, center_tol: float = CENTER_TOL) -> dict:
                         conflicts.add(eid)
                         same_sign = (speeds[nb] > 0) == (v > 0)
                         code = "RATIO_CONFLICT" if same_sign else "DIRECTION_CONFLICT"
+                        label = _sname(shafts[nb]) if nb in shafts else \
+                            "行星级 %s 的%s" % (nb.split(":")[0],
+                                               P_NAMES.get(nb.split(":")[-1], nb))
                         if same_sign:
-                            msg = "传动比矛盾：轴「%s」经两条路径推得 %s 与 %s" % (
-                                _sname(shafts[nb]), speeds[nb], v)
+                            msg = "传动比矛盾：%s 经两条路径推得 %s 与 %s" % (
+                                label, speeds[nb], v)
                         else:
-                            msg = "转向矛盾：轴「%s」经两条路径转向相反（%s 与 %s），闭合轮系齿数不满足约束" % (
-                                _sname(shafts[nb]), speeds[nb], v)
-                        add("error", code, msg, mesh=eid, shaft=nb)
+                            msg = "转向矛盾：%s 经两条路径转向相反（%s 与 %s），闭合轮系齿数不满足约束" % (
+                                label, speeds[nb], v)
+                        add("error", code, msg, mesh=eid if not eid.startswith(("willis:", "pllink:")) else None,
+                            planet=eid.split(":")[1] if eid.startswith(("willis:", "pllink:")) else None,
+                            shaft=nb if nb in shafts else None)
                 else:
                     speeds[nb] = v
                     q.append(nb)
+
+    for sid, val in seeds:
+        bfs(sid, val)
+    if not input_id:
+        add("info", "NO_INPUT", "尚未指定输入轴（在轴属性中设置）")
+    else:
+        bfs(input_id, Fraction(1, 1))
 
     for sid, s in shafts.items():
         if sid not in speeds and any(g.get("shaftId") == sid for g in gears.values()):
             add("warning", "IDLE_SHAFT", "轴「%s」未连入输入轴的动力链" % _sname(s), shaft=sid)
     if output_id and output_id not in speeds:
         add("warning", "NO_OUTPUT_PATH", "输出轴无法从输入轴到达")
-    if not output_id or output_id not in shafts:
-        add("info", "NO_OUTPUT", "尚未指定输出轴（在轴属性中设置）")
+    if not output_id:
+        add("info", "NO_OUTPUT", "尚未指定输出轴（在轴属性或行星级编辑器中设置）")
 
     # --- 总传动比 ---
     ratio = speeds.get(output_id) if output_id else None
     input_rpm = float(state.get("inputRpm", 1) or 1)
     rpms = {sid: input_rpm * float(v) for sid, v in speeds.items()}
 
-    # --- 整列复位循环：每只齿轮走过的齿距数 z·n·L 必须为整数 ---
+    # --- 行星轮自转速度与成员信息 ---
+    for info in planet_infos:
+        if "nodes" not in info:
+            continue
+        ns_id = info["nodes"]["s"]
+        nc_id = info["nodes"]["c"]
+        spin = planet_spin(info["zS"], info["zP"], speeds, ns_id, nc_id)
+        for mem, node in info["nodes"].items():
+            info["speeds"][mem] = fj(speeds[node]) if node in speeds else None
+        info["spin"] = fj(spin) if spin is not None else None
+
+    # --- 整列复位循环：每只齿轮走过的齿距数 z·n·L 必须为整数；
+    #     行星轮自转另计（公转的整数只影响回到同一轴位，不恢复齿相位） ---
     denoms = []
     for gid, g in gears.items():
         sid = g.get("shaftId")
         if sid in speeds and isinstance(g.get("z"), int):
             denoms.append((g["z"] * speeds[sid]).denominator)
+    for info in planet_infos:
+        if "nodes" not in info:
+            continue
+        for mem, z in (("s", info["zS"]), ("r", info["zR"])):
+            node = info["nodes"][mem]
+            if node in speeds:
+                denoms.append((z * speeds[node]).denominator)
+        spin = planet_spin(info["zS"], info["zP"], speeds,
+                           info["nodes"]["s"], info["nodes"]["c"])
+        if spin is not None:
+            denoms.append((info["zP"] * spin).denominator)
     L = 1
     for d in denoms:
         L = lcm(L, d)
@@ -220,6 +451,7 @@ def analyze(state: dict, center_tol: float = CENTER_TOL) -> dict:
         "ratio": None if ratio is None else fj(ratio),
         "cycle": cycle,
         "edges": edge_info,
+        "planets": planet_infos,
     }
 
 
@@ -797,6 +1029,139 @@ def search(params: dict) -> dict:
         "totalMatched": len(raw),
         "truncated": truncated[0],
         "nodes": nodes[0],
+        "target": str(target),
+        "note": None,
+    }
+
+# ----------------------------- 行星级配齿搜索 -----------------------------
+
+# 六种角色配置下的输出/输入传动比：
+#   n_out/n_in，f = zR/zS（齿数比）
+#   r 固定、c→s：1+f   s 固定、c→r：1+1/f
+#   r 固定、s→c：1/(1+f)   s 固定、r→c：f/(1+f)
+#   c 固定、s→r：-1/f   c 固定、r→s：-f
+PLANET_CONFIGS = [
+    {"fixed": "r", "input": "c", "output": "s", "key": "rcs"},
+    {"fixed": "r", "input": "s", "output": "c", "key": "rsc"},
+    {"fixed": "s", "input": "c", "output": "r", "key": "scr"},
+    {"fixed": "s", "input": "r", "output": "c", "key": "src"},
+    {"fixed": "c", "input": "s", "output": "r", "key": "csr"},
+    {"fixed": "c", "input": "r", "output": "s", "key": "crs"},
+]
+
+
+def _planet_config_ratio(cfg, zs, zr):
+    f = Fraction(zr, zs)
+    key = cfg["key"]
+    if key == "rcs":
+        return 1 + f
+    if key == "rsc":
+        return 1 / (1 + f)
+    if key == "scr":
+        return 1 + 1 / f
+    if key == "src":
+        return f / (1 + f)
+    if key == "csr":
+        return -1 / f
+    return -f  # crs
+
+
+def search_planets(params: dict) -> dict:
+    """枚举满足目标传动比、齿数范围、行星数与外径上限的可装配行星级。"""
+    target_s = str(params.get("target", "")).strip().replace(" ", "")
+    tol = float(params.get("tolerancePct", 1.0))
+    zmin = int(params.get("zMin", 12))
+    zmax = int(params.get("zMax", 120))
+    modules = sorted({float(x) for x in
+                      str(params.get("modules", "1")).replace("，", ",").split(",")
+                      if x.strip()})
+    counts = sorted({int(x) for x in
+                     str(params.get("counts", "3")).replace("，", ",").split(",")
+                     if x.strip() and 2 <= int(x) <= 6} or {3})
+    max_outer = float(params.get("maxOuter", 1e9))
+    clearance = float(params.get("minClearance", 0.0))  # 相邻行星顶圆最小净距 mm
+    result_limit = int(params.get("limit", 200))
+    deadline = time.time() + float(params.get("timeBudget", 8.0))
+    magnitude_only = not target_s.startswith("-")
+
+    target = Fraction(target_s)
+    tol_frac = Fraction(str(tol)) / 100
+    tol_lo, tol_hi = 1 - tol_frac, 1 + tol_frac
+    _at = abs(target)
+
+    results = []
+    nodes = 0
+    truncated = False
+    # 以 zS、zP、n、配置 为变量；zR 由 z圈=z太阳+2z行星 决定，再校验装配/外径/净距
+    for mdl in modules:
+        for cfg in PLANET_CONFIGS:
+            for zs in range(max(zmin, 1), zmax + 1):
+                for zp in range(max(zmin, 1), zmax + 1):
+                    zr = zs + 2 * zp
+                    if zr > zmax:
+                        break
+                    nodes += 1
+                    if nodes % 4096 == 0 and time.time() > deadline:
+                        truncated = True
+                        break
+                    rr = _planet_config_ratio(cfg, zs, zr)
+                    if magnitude_only and (rr < 0) != (target < 0) and not (
+                            target > 0 and rr > 0):
+                        pass
+                    mag = abs(rr)
+                    err = (abs(mag - _at) / _at) if magnitude_only \
+                        else abs(rr - target) / abs(target)
+                    if not magnitude_only and (rr < 0) != (target < 0):
+                        continue
+                    if err > tol_frac:
+                        continue
+                    outer = mdl * (zr + 2.5)
+                    if outer > max_outer:
+                        continue
+                    orbit = mdl * (zs + zp) / 2.0
+                    for n in counts:
+                        if (zs + zr) % n:
+                            continue
+                        chord = 2 * orbit * math.sin(math.pi / n)
+                        net = chord - mdl * (zp + 2)
+                        if net < clearance:
+                            continue
+                        # 复位循环：以输入成员转 1 转为基准，求 zS·n_s、zR·n_r、
+                        # zP·n_p 同时为整数所需的输入转数
+                        speeds = {}
+                        speeds[cfg["input"]] = Fraction(1)
+                        speeds[cfg["fixed"]] = Fraction(0)
+                        speeds[cfg["output"]] = rr
+                        spin = speeds["c"] - Fraction(zs, zp) * (speeds["s"] - speeds["c"])
+                        L = 1
+                        for z, mem in ((zs, "s"), (zr, "r")):
+                            L = lcm(L, (z * speeds[mem]).denominator)
+                        L = lcm(L, (zp * spin).denominator)
+                        results.append({
+                            "module": mdl, "zS": zs, "zP": zp, "zR": zr,
+                            "count": n,
+                            "fixed": cfg["fixed"], "input": cfg["input"],
+                            "output": cfg["output"],
+                            "ratio": fj(rr), "errorPct": round(float(err) * 100, 5),
+                            "outerD": round(outer, 3),
+                            "orbitR": round(orbit, 3),
+                            "netGap": round(net, 3),
+                            "cycle": str(L), "cycleV": float(L),
+                            "maxZ": zr,
+                        })
+                if truncated:
+                    break
+            if truncated:
+                break
+        if truncated:
+            break
+
+    results.sort(key=lambda c: (c["errorPct"], c["outerD"], c["cycleV"], c["maxZ"]))
+    return {
+        "results": results[:result_limit],
+        "totalMatched": len(results),
+        "truncated": truncated,
+        "nodes": nodes,
         "target": str(target),
         "note": None,
     }
