@@ -9,6 +9,7 @@ from flask import Flask, g, jsonify, render_template, request
 
 import kinematics
 import meshing
+import contact
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "geartrain.db")
@@ -160,6 +161,35 @@ def api_mesh_shifts():
         return jsonify(meshing.search_shifts(body))
     except Exception as exc:  # noqa: BLE001
         return jsonify({"results": [], "note": "搜索参数有误：%s" % exc}), 400
+
+
+@app.post("/api/teeth")
+def api_teeth():
+    """齿对接触周期：沿传动方向展开齿对事件、可达子集、接触矩阵、关注齿相遇角。"""
+    body = request.get_json(force=True)
+    try:
+        turns = body.get("observeTurns")
+        turns = float(turns) if turns is not None else None
+        return jsonify(contact.analyze_teeth(body.get("state", {}), turns))
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.post("/api/teeth-assembly")
+def api_teeth_assembly():
+    """锁定带键齿轮相位，枚举其余齿轮的整齿装配偏移候选。"""
+    body = request.get_json(force=True)
+    try:
+        turns = body.get("observeTurns")
+        turns = float(turns) if turns is not None else None
+        return jsonify(contact.enumerate_assembly(
+            body.get("state", {}),
+            offset_range=int(body.get("offsetRange", 3)),
+            observe_turns=turns,
+            time_budget=float(body.get("timeBudget", 6.0)),
+        ))
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"candidates": [], "note": "装配枚举参数有误：%s" % exc}), 400
 
 
 @app.post("/api/alternatives")

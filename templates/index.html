@@ -73,6 +73,7 @@
     <aside id="side">
       <div class="tabs">
         <button class="tab active" data-tab="analysis">分析</button>
+        <button class="tab" data-tab="teeth">齿对/相位</button>
         <button class="tab" data-tab="props">属性</button>
         <button class="tab" data-tab="planet">行星轮系</button>
         <button class="tab" data-tab="search">配齿搜索</button>
@@ -87,6 +88,42 @@
         <div id="cycle-head" class="muted"></div>
         <table id="shaft-table"><tbody></tbody></table>
         <div id="planet-speeds"></div>
+      </div>
+
+      <div class="panel" id="panel-teeth">
+        <div class="field-row">
+          <div class="field">
+            <label>观察输入转数</label>
+            <input id="tt-turns" type="number" step="0.5" min="0.1" value="2">
+          </div>
+          <div class="field tooth-legend">
+            <label>图例</label>
+            <div class="tt-legend">
+              <span><i class="lg zero"></i>零号齿</span>
+              <span><i class="lg watch"></i>关注齿</span>
+              <span><i class="lg wear"></i>磨损</span>
+              <span><i class="lg chip"></i>崩角</span>
+              <span><i class="lg repair"></i>修补</span>
+            </div>
+          </div>
+        </div>
+        <p class="muted small">在齿轮属性里设置零号齿方向、勾选「带键锁定」并点选关注齿/标记齿；播放时画布高亮当前在节点处啮合的齿号。</p>
+        <div id="tt-summary" class="tt-summary muted"></div>
+        <div id="tt-meshes"></div>
+
+        <h3>整齿装配相位枚举</h3>
+        <div class="field-row">
+          <div class="field">
+            <label>偏移搜索范围（±齿距）</label>
+            <input id="tt-range" type="number" min="0" max="12" step="1" value="3">
+          </div>
+          <div class="field" style="display:flex;align-items:flex-end">
+            <button id="btn-tt-asm" type="button" class="primary">枚举装配候选</button>
+          </div>
+        </div>
+        <p class="muted small">带键齿轮（属性中锁定相位）不参与枚举；候选按关注齿相遇越少 → 首次相遇越晚 → 相位改动越小排列。</p>
+        <div id="tt-asm-meta" class="muted small"></div>
+        <ol id="tt-asm-list"></ol>
       </div>
 
       <div class="panel" id="panel-props">

@@ -78,11 +78,22 @@ let saveTimer = null;
 let stateVersion = 0;
 let previewCache = null;
 
+/* 齿对接触/装配相位分析（后端 /api/teeth 计算） */
+let teethData = null;            // 最近一次返回
+let teethVer = -1;               // 对应 stateVersion
+let teethToken = 0;
+let teethTimer = null;
+let selectedMeshTeeth = null;    // 齿对页当前展开的啮合 id
+let selectedCell = null;         // {meshId, ia, ib} 接触矩阵点选
+let assemblyCands = [];
+let selectedAsmCand = -1;
+let asmMeta = null;
+
 const view = { zoom: 1, panX: 60, panY: 200 };
 
 function emptyState() {
   return { shafts: [], gears: [], meshes: [], coaxRelations: [], planets: [],
-           inputId: null, outputId: null, inputRpm: 60 };
+           inputId: null, outputId: null, inputRpm: 60, observeTurns: 2 };
 }
 const byId = (list, id) => (list || []).find(o => o.id === id);
 const shaftMap = () => Object.fromEntries(state.shafts.map(s => [s.id, s]));
@@ -402,10 +413,14 @@ function sampleState() {
     { id: 's3', name: '输出轴', x: 88, y: 0, locked: false },
   ];
   st.gears = [
-    { id: 'g1', shaftId: 's1', name: '主动轮', z: 24, module: 1, pressureAngle: 20, internal: false, locked: false },
-    { id: 'g2', shaftId: 's2', name: '大轮', z: 72, module: 1, pressureAngle: 20, internal: false, locked: false },
-    { id: 'g3', shaftId: 's2', name: '二级小轮', z: 20, module: 1, pressureAngle: 20, internal: false, locked: false },
-    { id: 'g4', shaftId: 's3', name: '输出轮', z: 60, module: 1, pressureAngle: 20, internal: false, locked: false },
+    { id: 'g1', shaftId: 's1', name: '主动轮', z: 24, module: 1, pressureAngle: 20, internal: false, locked: false,
+      zeroDeg: 180, offset: 0, phaseLocked: true, watched: [0], marks: {} },
+    { id: 'g2', shaftId: 's2', name: '大轮', z: 72, module: 1, pressureAngle: 20, internal: false, locked: false,
+      zeroDeg: 0, offset: 0, phaseLocked: false, watched: [0], marks: { 36: 'wear' } },
+    { id: 'g3', shaftId: 's2', name: '二级小轮', z: 20, module: 1, pressureAngle: 20, internal: false, locked: false,
+      zeroDeg: 180, offset: 0, phaseLocked: false, watched: [], marks: {} },
+    { id: 'g4', shaftId: 's3', name: '输出轮', z: 60, module: 1, pressureAngle: 20, internal: false, locked: false,
+      zeroDeg: 0, offset: 0, phaseLocked: false, watched: [], marks: { 0: 'repair' } },
   ];
   st.meshes = [
     { id: 'm1', gearA: 'g1', gearB: 'g2' },
@@ -416,6 +431,7 @@ function sampleState() {
   st.inputId = 's1';
   st.outputId = 's3';
   st.inputRpm = 60;
+  st.observeTurns = 6;
   return st;
 }
 
@@ -435,6 +451,86 @@ function gearRadii(g) {
 }
 
 function clearLayer(l) { while (l.firstChild) l.removeChild(l.firstChild); }
+
+/* 齿的固定方向角（全局，度）：齿 i 在 θ轴=0 时位于 zero + 360·(i+offset)/z。
+   画在齿轮组（gg）内，随 rotor 按轴转角整体旋转。 */
+function toothAngle(g, i) {
+  const off = Number.isInteger(g.offset) ? g.offset : 0;
+  return (g.zeroDeg || 0) + 360 * (i + off) / g.z;
+}
+
+const MARK_COLOR = { wear: 'tooth-wear', chip: 'tooth-chip', repair: 'tooth-repair' };
+const MARK_TEXT = { wear: '磨损', chip: '崩角', repair: '修补' };
+
+function gearMarks(g) {
+  const out = new Map();
+  if (!Number.isInteger(g.z)) return out;
+  for (const [k, v] of Object.entries(g.marks || {})) {
+    const t = parseInt(k, 10);
+    if (Number.isInteger(t) && t >= 0 && t < g.z && MARK_COLOR[v]) out.set(t, v);
+  }
+  return out;
+}
+function gearWatched(g) {
+  const out = [];
+  const seen = new Set();
+  if (!Number.isInteger(g.z)) return out;
+  for (const t of (g.watched || []))
+    if (Number.isInteger(t) && t >= 0 && t < g.z && !seen.has(t)) { seen.add(t); out.push(t); }
+  return out;
+}
+
+function renderGearToothDeco(gg, g, R) {
+  if (!Number.isInteger(g.z) || g.z <= 0) return;
+  const deco = svgEl('g', { class: 'tooth-deco' }, gg);
+  const marks = gearMarks(g);
+  const watched = new Set(gearWatched(g));
+  const showNums = g.z <= 40;
+  // 圆点半径与安放半径：外齿标在齿顶外沿，内齿圈标在齿顶圆内侧
+  const internal = !!g.internal;
+  const dotR = Math.max(0.55, Math.min(1.1, R.outer * 0.02));
+  const rad = internal ? R.tip + dotR + 0.35 : R.outer - dotR - 0.35;
+  for (let i = 0; i < g.z; i++) {
+    if (!watched.has(i) && !marks.has(i)) continue;
+    const a = toothAngle(g, i) * Math.PI / 180;
+    const x = Math.cos(a) * rad, y = Math.sin(a) * rad;
+    const kind = marks.get(i);
+    svgEl('circle', { cx: x, cy: y, r: dotR,
+      class: kind ? MARK_COLOR[kind] : 'tooth-watch' }, deco);
+  }
+  // 零号齿：黑色方块（键相标记）
+  const zr0 = dotR * 1.25;
+  const za0 = toothAngle(g, 0) * Math.PI / 180;
+  const zrad = internal ? R.tip + zr0 + 0.35 : R.outer - zr0 - 0.35;
+  svgEl('rect', {
+    x: Math.cos(za0) * zrad - zr0, y: Math.sin(za0) * zrad - zr0,
+    width: zr0 * 2, height: zr0 * 2, class: 'tooth-zero',
+    transform: `rotate(${toothAngle(g, 0)} ${Math.cos(za0) * zrad} ${Math.sin(za0) * zrad})`,
+  }, deco);
+  // 齿号（齿少时）：画在节圆内侧
+  if (showNums) {
+    for (let i = 0; i < g.z; i++) {
+      if (i % Math.max(1, Math.round(g.z / 24)) !== 0 && i !== 0 && !watched.has(i)) continue;
+      const a = toothAngle(g, i) * Math.PI / 180;
+      const rr = Math.max(1.2, R.rp * 0.62);
+      svgEl('text', { class: 'tooth-num', x: Math.cos(a) * rr, y: Math.sin(a) * rr + 0.85,
+        text: String(i) }, deco);
+    }
+  }
+}
+
+/* 当前啮合齿高亮组（每只齿轮一对，随 rotor 旋转后由 updateToothHighlights 定位） */
+function buildToothHighlightGroups(rotor, sgears) {
+  for (const g of sgears) {
+    const R = gearRadii(g);
+    for (const role of ['a', 'b']) {
+      const grp = svgEl('g', { class: `tooth-cur-${role}`, 'data-cur-gear': g.id,
+        'data-rad': R.outer, 'data-internal': g.internal ? '1' : '0' }, rotor);
+      svgEl('path', { class: 'tooth-cur-arc' }, grp);
+      svgEl('text', { class: 'tooth-cur-label', y: -R.outer - 1.2 }, grp);
+    }
+  }
+}
 
 function selectedMeshBad() {
   return new Set(analysis.issues.filter(i => i.severity === 'error' && i.refs.mesh).map(i => i.refs.mesh));
@@ -509,7 +605,9 @@ function render() {
       svgEl('circle', { r: R.outer + 2, class: 'gear-hit', 'data-gear': g.id,
         'pointer-events': 'all' }, gg);
       svgEl('text', { class: 'gear-label', y: R.outer + 4.2, text: g.name || `z${g.z}` }, gg);
+      renderGearToothDeco(gg, g, R);
     }
+    buildToothHighlightGroups(rotor, sgears);
   }
 
   /* 轴标 */
@@ -536,6 +634,7 @@ function render() {
   applyWorldTransform();
   updateRotorTransforms();
   updatePlanetTransforms();
+  updateMatrixCurrentCell();
   renderPanels();
 }
 
@@ -788,11 +887,86 @@ function updateRotorTransforms() {
     const a = sp ? sp.v * theta : 0;
     node.setAttribute('transform', `translate(${s.x} ${s.y}) rotate(${a})`);
   });
+  updateToothHighlights(st, an, theta);
+}
+
+/* 播放/拖动时：根据后端齿对描述定位当前在节点处啮合的齿，画弧+齿号。
+   描述子（teethData.meshes）含 driverGear/drivenGear、rate（事件/输入转）、
+   i0A/i0B、内啮合标志与节点方向 phiDeg。k 为最近一次事件序号（就近取整）。 */
+function activeTeethData() {
+  if (selectedAsmCand >= 0 && assemblyCands[selectedAsmCand] && assemblyCands[selectedAsmCand]._previewData)
+    return assemblyCands[selectedAsmCand]._previewData;
+  if (teethData && teethVer === stateVersion && selectedAsmCand < 0) return teethData;
+  return null;
+}
+
+function currentPairAt(td, theta) {
+  // 返回 {gearId -> {i, role:'a'|'b', mesh}}，同一齿轮多啮合时取事件最接近节点的
+  const out = new Map();
+  const turns = theta / 360;
+  for (const m of td.meshes || []) {
+    const rate = m.rate ? m.rate.v : 0;
+    if (!(rate > 0)) continue;
+    const k = Math.floor(rate * turns + 0.5);
+    const ia = ((m.i0A + k) % m.zA + m.zA) % m.zA;
+    const ib = (m.internal
+      ? (m.i0B + k) % m.zB
+      : (m.i0B - k) % m.zB + m.zB) % m.zB;
+    const frac = rate * turns - k;          // 距最近节点的齿距分数（绝对值越小越贴合）
+    const closeness = 1 - Math.min(1, Math.abs(frac));
+    const put = (gid, i, role) => {
+      const prev = out.get(gid);
+      if (!prev || closeness > prev.closeness) out.set(gid, { i, role, mesh: m, closeness });
+    };
+    put(m.driverGear, ia, 'a');
+    put(m.drivenGear, ib, 'b');
+  }
+  return out;
+}
+
+function updateToothHighlights(st, an, theta) {
+  const td = activeTeethData();
+  const active = td ? currentPairAt(td, theta) : new Map();
+  document.querySelectorAll('.rotor').forEach(rotor => {
+    const sid = rotor.getAttribute('data-shaft');
+    const sp = an.speeds[sid];
+    const shaftDeg = sp ? sp.v * theta : 0;
+    rotor.querySelectorAll('[data-cur-gear]').forEach(grp => {
+      const gid = grp.getAttribute('data-cur-gear');
+      const g = byId(st.gears, gid);
+      const info = active.get(gid);
+      if (!g || !info) { grp.style.display = 'none'; return; }
+      grp.style.display = '';
+      const mesh = info.mesh;
+      const worldPhi = mesh.driverGear === gid
+        ? mesh.phiDeg
+        : mesh.phiDeg + 180;
+      const localDeg = worldPhi - shaftDeg;
+      grp.setAttribute('transform', `rotate(${localDeg})`);
+      grp.classList.toggle('tooth-cur-a', info.role === 'a');
+      grp.classList.toggle('tooth-cur-b', info.role !== 'a');
+      const rad0 = parseFloat(grp.getAttribute('data-rad'));
+      const internal = grp.getAttribute('data-internal') === '1';
+      // 内齿圈节圆 = outer − m(ha+c)…；弧画在齿顶圆（内腔边界）内侧附近
+      const rr = internal ? Math.max(1.5, rad0 - 2.6) : rad0 + 0.2;
+      const arc = grp.querySelector('.tooth-cur-arc');
+      const half = 7;
+      arc.setAttribute('d',
+        `M ${(rr * Math.cos((-half) * Math.PI / 180)).toFixed(2)} ${(rr * Math.sin((-half) * Math.PI / 180)).toFixed(2)}
+         A ${rr.toFixed(2)} ${rr.toFixed(2)} 0 0 1
+           ${(rr * Math.cos(half * Math.PI / 180)).toFixed(2)} ${(rr * Math.sin(half * Math.PI / 180)).toFixed(2)}`);
+      arc.setAttribute('stroke-width', Math.max(0.6, rr * 0.03).toFixed(2));
+      const lbl = grp.querySelector('.tooth-cur-label');
+      lbl.textContent = '#' + info.i;
+      lbl.setAttribute('y', -(rr + 1.6));
+    });
+  });
 }
 
 /* ---------------- 面板：分析 ---------------- */
 function renderPanels() {
   renderAnalysisPanel();
+  renderTeethPanel();
   renderProps();
   renderPlanetPanel();
   renderSearchPanel();
@@ -973,6 +1147,18 @@ function renderProps() {
     }
     const rp = g.module * g.z / 2;
     h('p', { class: 'muted small' }, body, `节圆半径 r' = m·z/2 = ${rp.toFixed(2)} mm（${g.internal ? '内齿，节圆为齿圈分度圆' : '外齿'}）`);
+
+    /* ---- 齿序与装配相位 ---- */
+    labeledInput(body, '零号齿方向（°，θ=0 时 0 号齿中心线的全局方向）',
+      g.zeroDeg || 0, v => { g.zeroDeg = ((parseFloat(v) % 360) + 360) % 360; toothEditChanged(); },
+      'number', { step: 5 });
+    labeledInput(body, '整齿装配偏移（齿距数，整数；带键基准到实际装入位置）',
+      Number.isInteger(g.offset) ? g.offset : 0,
+      v => { g.offset = parseInt(v, 10) || 0; toothEditChanged(); });
+    labeledInput(body, '带键齿轮（相位锁定，枚举装配时不动）',
+      !!g.phaseLocked, v => { g.phaseLocked = v; toothEditChanged(); }, 'checkbox');
+    renderToothRingEditor(body, g);
+
     h('button', { class: 'danger', onclick: () => deleteGear(g.id) }, body, '删除该齿轮');
   } else if (selection.type === 'mesh') {
     const e = byId(state.meshes, selection.id);
@@ -1189,7 +1375,8 @@ function addShaft(x, y) {
 }
 function addGearOn(sid) {
   const g = { id: uid('g'), shaftId: sid, name: '', z: 24, module: 1,
-    pressureAngle: 20, internal: false, locked: false, ha: 1, c: 0.25, x: 0 };
+    pressureAngle: 20, internal: false, locked: false, ha: 1, c: 0.25, x: 0,
+    zeroDeg: 0, offset: 0, phaseLocked: false, watched: [], marks: {} };
   state.gears.push(g);
   selection = { type: 'gear', id: g.id };
   markDirty(); render();
@@ -1475,7 +1662,7 @@ let lastTs = 0;
 function resetMotion() {
   motionTheta = 0;
   const sl = $('#angle-slider');
-  if (sl) sl.value = 0;
+  if (sl) { sl.value = 0; sl.min = '0'; }
   const ro = $('#angle-readout');
   if (ro) ro.textContent = '0°';
 }
@@ -1509,8 +1696,11 @@ function frame(ts) {
     // 输入轴按其 rpm 推进；其余构件（含行星轮自转/公转）由转速比随动
     const rpm = st.inputRpm || 60;
     applyMotionTheta(motionTheta + rpm * 6 * dt);
-    if ($('#angle-loop').checked && an.cycle && motionTheta >= 360 * an.cycle.inputTurnsV)
-      applyMotionTheta(motionTheta - 360 * an.cycle.inputTurnsV);
+    if ($('#angle-loop').checked) {
+      const sl = $('#angle-slider');
+      const hi = sl ? parseFloat(sl.max) || 360 : 360;
+      if (motionTheta >= hi) applyMotionTheta(motionTheta % hi);
+    }
   } else if (playMode === 'step') {
     const lv = Math.max(1, an.levels.length);
     const dur = 0.85 * (lv + 0.5);
@@ -1555,8 +1745,451 @@ $('#angle-slider').addEventListener('input', e => {
   if (playMode !== 'none') setPlay('none');
   applyMotionTheta(parseFloat(e.target.value));
 });
+$('#tt-turns')?.addEventListener('change', e => {
+  const v = Math.max(0.1, parseFloat(e.target.value) || 2);
+  e.target.value = v;
+  state.observeTurns = v;
+  markDirty();
+  render();
+});
+
+/* ---------------- 齿对 / 相位面板 ---------------- */
+function scheduleTeethFetch() {
+  clearTimeout(teethTimer);
+  const ver = stateVersion;
+  const token = ++teethToken;
+  teethTimer = setTimeout(async () => {
+    if (selectedAsmCand >= 0) { renderTeethPanel(); return; }
+    const turns = parseFloat($('#tt-turns')?.value) || state.observeTurns || 2;
+    if (Math.abs((state.observeTurns || 2) - turns) > 1e-9) state.observeTurns = turns;
+    try {
+      const resp = await fetch('/api/teeth', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state, observeTurns: turns }),
+      });
+      const data = await resp.json();
+      if (token !== teethToken) return;
+      teethData = data; teethVer = ver;
+      const maxTurns = Math.max(turns, ...(data.meshes || []).map(m => m.periodInputTurns ? m.periodInputTurns.v : turns));
+      configureAngleSlider(turns, maxTurns);
+    } catch (e) {
+      if (token === teethToken) teethData = null;
+    }
+    renderTeethPanel();
+  }, 350);
+}
+
+function configureAngleSlider(observeTurns, maxCycleTurns) {
+  const sl = $('#angle-slider');
+  if (!sl) return;
+  const hi = Math.ceil(Math.max(observeTurns * 360, maxCycleTurns * 360, 720));
+  sl.max = String(Math.min(hi, 360 * 200));
+  sl.min = '0';
+}
+
+function renderTeethPanel() {
+  const turnsInp = $('#tt-turns');
+  if (turnsInp && document.activeElement !== turnsInp)
+    turnsInp.value = state.observeTurns ?? 2;
+  const sum = $('#tt-summary');
+  const wrap = $('#tt-meshes');
+  if (!sum || !wrap) return;
+  wrap.innerHTML = '';
+  const td = selectedAsmCand >= 0 && assemblyCands[selectedAsmCand]?._previewData
+    ? assemblyCands[selectedAsmCand]._previewData
+    : teethData;
+  const tdFresh = td && (selectedAsmCand >= 0 || teethVer === stateVersion);
+  if (!tdFresh) {
+    sum.textContent = '正在计算齿对序列…';
+    sum.classList.add('muted');
+    return;
+  }
+  if (!(td.meshes || []).length) {
+    sum.textContent = '动力链内没有可展开的普通齿轮啮合（行星轮系内部啮合暂不参与齿序展开）。';
+    sum.classList.add('muted');
+  } else {
+    sum.classList.remove('muted');
+    const subset = td.meshes.filter(m => m.subsetOnly).length;
+    sum.innerHTML = `观察窗 <b>${td.observeTurns}</b> 输入转：全部啮合共 <b>${td.reachPairs}</b> 个可到达齿对` +
+      `（名义组合 ${td.totalPairs}）；其中 <b>${subset}</b> 处啮合长期只在固定子集循环。`;
+  }
+  if (!selectedMeshTeeth || !td.meshes.some(m => m.meshId === selectedMeshTeeth))
+    selectedMeshTeeth = td.meshes[0] ? td.meshes[0].meshId : null;
+
+  for (const m of td.meshes) {
+    const card = h('div', { class: 'tt-mesh-card' + (m.meshId === selectedMeshTeeth ? ' selected' : ''),
+      'data-mesh': m.meshId }, wrap);
+    const head = h('div', { class: 'tt-head', style: 'cursor:pointer' }, card);
+    h('span', {}, head, `${m.nameA}（${m.zA}齿）⇄ ${m.nameB}（${m.zB}齿）`);
+    h('span', { class: 'tt-kind ' + (m.internal ? '' : 'external') }, head,
+      m.internal ? '内啮合' : '外啮合');
+    head.addEventListener('click', () => {
+      selectedMeshTeeth = m.meshId === selectedMeshTeeth ? null : m.meshId;
+      renderTeethPanel();
+    });
+    const g = gcd(m.zA, m.zB);
+    const facts = h('div', { class: 'tt-facts' }, card);
+    const drvName = m.driverGear === m.gearA ? m.nameA : m.nameB;
+    facts.textContent =
+      `主动：${drvName}（每输入转 ${m.shaftRate.s} 转）；事件间隔 ${(360 / m.rate.v).toFixed(2)}°（输入角）；` +
+      `重复周期 ${m.periodEvents} 个齿距事件 = 输入 ${m.periodInputTurns.s} 转；` +
+      `可到达齿对 ${m.reachPairs}/${m.totalPairs}（gcd=${g}）；观察窗内事件 ${m.events} 次。`;
+    if (m.subsetOnly)
+      h('div', { class: 'tt-warn' }, card,
+        `⚠ 长期只在 ${m.reachPairs} 个齿对（全部 ${m.totalPairs} 个的 1/${g}）上循环，其余齿对永不接触；` +
+        `改变任一齿轮的整齿装配偏移可切换循环子集。`);
+
+    if (m.meshId !== selectedMeshTeeth) continue;
+
+    /* 关注齿相遇 */
+    const watchBox = h('div', { style: 'margin-top:6px' }, card);
+    h('b', { class: 'small' }, watchBox, '关注齿彼此相遇：');
+    if (!m.watchMeetings.length) {
+      h('span', { class: 'muted small' }, watchBox, ' 观察窗内关注齿不相遇（或两侧均未标记关注齿）。');
+    } else {
+      const ul = h('ul', { class: 'tt-meet-list' }, watchBox);
+      for (const w of m.watchMeetings) {
+        const li = h('li', {}, ul);
+        const btn = h('button', { title: '跳到首次相遇' }, li);
+        btn.innerHTML = `${m.nameA}<b>#${w.ia}</b> × ${m.nameB}<b>#${w.ib}</b>`;
+        btn.addEventListener('click', () => jumpToPair(m, w.ia, w.ib));
+        li.appendChild(document.createTextNode(
+          ` 首次 ${w.firstDeg.toFixed(1)}°（${w.firstTurns.s} 转），窗内 ${w.count} 次`));
+      }
+    }
+    /* 标记齿相遇 */
+    if (m.markedMeetings.length) {
+      const mb = h('div', { style: 'margin-top:4px' }, card);
+      h('b', { class: 'small' }, mb, '标记齿进入啮合（' + MARK_LIST_KIND(m) + '）：');
+      const ul = h('ul', { class: 'tt-meet-list' }, mb);
+      for (const w of m.markedMeetings.slice(0, 24)) {
+        const li = h('li', {}, ul);
+        const btn = h('button', { title: '跳到首次相遇' }, li);
+        const tag = w.markA || w.markB;
+        btn.innerHTML = `<b style="color:${tag === 'chip' ? 'var(--err)' : tag === 'wear' ? 'var(--warn)' : 'var(--ok)'}">${MARK_TEXT[tag]}</b> ` +
+          `${m.nameA}#${w.ia} × ${m.nameB}#${w.ib}`;
+        btn.addEventListener('click', () => jumpToPair(m, w.ia, w.ib));
+        li.appendChild(document.createTextNode(` 首次 ${w.firstDeg.toFixed(1)}°，窗内 ${w.count} 次`));
+      }
+      if (m.markedMeetings.length > 24)
+        h('li', { class: 'muted' }, ul, `…其余 ${m.markedMeetings.length - 24} 条略`);
+    }
+
+    /* 接触矩阵 */
+    if (m.matrixTruncated) {
+      h('div', { class: 'tt-warn' }, card,
+        `周期 ${m.periodEvents} 超过矩阵上限，不绘制格子；缩短传动链或调整齿数后再看。`);
+    } else if (m.matrix.length) {
+      const cap = h('div', { class: 'small muted', style: 'margin-top:6px' }, card,
+        '接触矩阵（行：主动齿 #，列：从动齿 #；颜色越深窗内相遇越多；点格跳到首次相遇）');
+      const scroll = h('div', { class: 'tt-matrix-wrap' }, card);
+      const grid = h('div', { class: 'tt-matrix' }, scroll);
+      const maxCnt = Math.max(...m.matrix.map(c => c[2]));
+      grid.style.gridTemplateColumns = `26px repeat(${m.zB}, 15px)`;
+      const cellMap = new Map(m.matrix.map(c => [`${c[0]}:${c[1]}`, c]));
+      // 表头：从动齿号（抽样）
+      h('div', { class: 'tt-corner' }, grid);
+      const colStep = Math.max(1, Math.ceil(m.zB / 24));
+      for (let ib = 0; ib < m.zB; ib++)
+        h('div', { class: 'tt-head-cell' }, grid, ib % colStep === 0 ? String(ib) : '');
+      const rowStep = Math.max(1, Math.ceil(m.zA / 40));
+      for (let ia = 0; ia < m.zA; ia++) {
+        h('div', { class: 'tt-rowhead' }, grid, ia % rowStep === 0 ? String(ia) : '');
+        for (let ib = 0; ib < m.zB; ib++) {
+          const c = cellMap.get(`${ia}:${ib}`);
+          const cell = h('button', { class: 'tt-cell', 'data-ia': ia, 'data-ib': ib }, grid);
+          if (c) {
+            const t = c[2] / maxCnt;
+            cell.style.background = `rgba(91,141,239,${(0.18 + 0.72 * t).toFixed(2)})`;
+            cell.title = `${m.nameA}#${ia} × ${m.nameB}#${ib}：窗内 ${c[2]} 次，首次 ${c[3].toFixed(1)}°`;
+            cell.addEventListener('click', () => jumpToPair(m, ia, ib));
+          } else {
+            cell.style.background = '#f7f5ef';
+            cell.title = `${m.nameA}#${ia} × ${m.nameB}#${ib}：观察窗内不接触`;
+            cell.disabled = true;
+            cell.style.cursor = 'default';
+          }
+        }
+      }
+    }
+  }
+  renderAssemblyList();
+}
+
+function MARK_LIST_KIND(m) {
+  const kinds = new Set();
+  for (const w of m.markedMeetings) { if (w.markA) kinds.add(MARK_TEXT[w.markA]); if (w.markB) kinds.add(MARK_TEXT[w.markB]); }
+  return [...kinds].join('/');
+}
+
+function gcd(a, b) { a = Math.abs(a); b = Math.abs(b); while (b) [a, b] = [b, a % b]; return a; }
+
+function jumpToPair(m, ia, ib) {
+  selectedCell = { meshId: m.meshId, ia, ib };
+  selectedMeshTeeth = m.meshId;
+  // 首次相遇角：矩阵/事件给出的是该齿对在观察窗内最早一次
+  const c = (m.matrix || []).find(x => x[0] === ia && x[1] === ib);
+  const deg = c ? c[3] : 0;
+  if (playMode !== 'none') setPlay('none');
+  const sl = $('#angle-slider');
+  if (sl) sl.value = String(Math.max(0, Math.min(parseFloat(sl.max), deg)));
+  applyMotionTheta(deg);
+  renderTeethPanel();
+  markCurrentCell();
+}
+
+function markCurrentCell() {
+  document.querySelectorAll('.tt-cell.cur').forEach(c => c.classList.remove('cur'));
+  if (!selectedCell) return;
+  const card = document.querySelector(`.tt-mesh-card.selected`);
+  if (!card) return;
+  const { ia, ib } = selectedCell;
+  const cell = card.querySelector(`.tt-cell[data-ia="${ia}"][data-ib="${ib}"]`);
+  if (cell) cell.classList.add('cur');
+}
+
+/* 播放/拖动时同步接触矩阵的当前齿对格子（不重渲染面板） */
+function updateMatrixCurrentCell() {
+  document.querySelectorAll('.tt-cell.cur').forEach(c => c.classList.remove('cur'));
+  const td = activeTeethData();
+  if (!td) return;
+  const cur = currentPairAt(td, motionTheta || 0);
+  for (const m of td.meshes || []) {
+    const a = cur.get(m.driverGear), b = cur.get(m.drivenGear);
+    if (!a || !b || a.mesh !== m) continue;
+    const card = document.querySelector(`.tt-mesh-card[data-mesh="${m.meshId}"]`) ||
+      (m.meshId === selectedMeshTeeth ? document.querySelector('.tt-mesh-card.selected') : null);
+    if (!card) continue;
+    const cell = card.querySelector(`.tt-cell[data-ia="${a.i}"][data-ib="${b.i}"]`);
+    if (cell) cell.classList.add('cur');
+  }
+}
 
 /* ---------------- 搜索面板 ---------------- */
+let toothMarkMode = 'watch';   // watch | wear | chip | repair | clear
+
+function toothEditChanged() {
+  markDirty();
+  render();
+  scheduleTeethFetch();
+}
+
+function renderToothRingEditor(body, g) {
+  if (!Number.isInteger(g.z) || g.z <= 0) return;
+  g.marks = g.marks || {};
+  g.watched = gearWatched(g);
+  const box = h('div', { class: 'tt-ring-box' }, body);
+  h('label', { class: 'muted small' }, box, '点齿标记（先选操作，再点圆周上的齿）');
+  const size = 150, cx = size / 2, cy = size / 2;
+  const svg = svgEl('svg', { class: 'tt-ring-svg', width: size, height: size,
+    viewBox: `-36 -36 72 72` }, box);
+  const R = g.internal ? 22 : 26;
+  const ringR = g.internal ? 18 : 24;
+
+  const redraw = () => {
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    const tip = svgEl('text', { x: 0, y: 33, 'text-anchor': 'middle',
+      style: 'font-size:6px;fill:var(--muted)' }, svg, `齿 #0`);
+    svgEl('circle', { r: R, fill: g.internal ? 'url(#hatch)' : '#fffdf8',
+      stroke: g.internal ? 'var(--gear-in)' : 'var(--gear)', 'stroke-width': 1.4 }, svg);
+    if (g.internal) svgEl('circle', { r: R - 4, fill: 'var(--bg)', stroke: '#8d6e63', 'stroke-width': 0.5 }, svg);
+    const marks = gearMarks(g);
+    const watched = new Set(g.watched);
+    for (let i = 0; i < g.z; i++) {
+      const a = toothAngle(g, i) * Math.PI / 180;
+      const x = Math.cos(a) * ringR, y = Math.sin(a) * ringR;
+      const kind = marks.get(i);
+      const fill = kind ? `var(--${kind === 'chip' ? 'err' : kind === 'wear' ? 'warn' : 'ok'})`
+        : watched.has(i) ? 'var(--accent)' : 'transparent';
+      const c = svgEl('circle', { cx: x.toFixed(2), cy: y.toFixed(2),
+        r: Math.max(1.4, Math.min(2.6, 2 * Math.PI * ringR / g.z * 0.34)),
+        fill, stroke: watched.has(i) || kind ? 'none' : 'var(--line)', 'stroke-width': 0.3,
+        'data-ti': i }, svg);
+      c.style.cursor = 'pointer';
+      c.addEventListener('click', ev => {
+        ev.stopPropagation();
+        applyToothMark(g, i);
+        toothEditChanged();
+      });
+      c.addEventListener('mouseenter', () => { tip.textContent = `齿 #${i}${kind ? '（' + MARK_TEXT[kind] + '）' : watched.has(i) ? '（关注齿）' : ''}`; });
+    }
+    // 零号齿方块
+    const a0 = toothAngle(g, 0) * Math.PI / 180;
+    svgEl('rect', { x: Math.cos(a0) * ringR - 1.8, y: Math.sin(a0) * ringR - 1.8,
+      width: 3.6, height: 3.6, fill: '#111',
+      transform: `rotate(${toothAngle(g, 0)} ${Math.cos(a0) * ringR} ${Math.sin(a0) * ringR})` }, svg);
+    // 齿数较多时编号通过悬停提示显示
+    svg.setAttribute('data-z', g.z);
+  };
+  redraw();
+
+  const tools = h('div', { class: 'tt-ring-tools' }, box);
+  const modes = [['watch', '关注齿'], ['wear', '磨损'], ['chip', '崩角'], ['repair', '修补'], ['clear', '取消标记']];
+  for (const [mode, label] of modes) {
+    const lab = h('label', { class: toothMarkMode === mode ? 'on' : '' }, tools);
+    const radio = h('input', { type: 'radio', name: `markmode-${g.id}`,
+      onchange: () => { toothMarkMode = mode;
+        tools.querySelectorAll('label').forEach(l => l.classList.remove('on'));
+        lab.classList.add('on'); } }, lab);
+    if (toothMarkMode === mode) radio.checked = true;
+    lab.appendChild(document.createTextNode(label));
+  }
+  const row = h('div', { class: 'tt-jump-row' }, box);
+  h('span', { class: 'muted small' }, row, '跳到齿号');
+  const inp = h('input', { type: 'number', min: 0, max: g.z - 1, value: 0 }, row);
+  h('button', { onclick: () => {
+    const t = Math.max(0, Math.min(g.z - 1, parseInt(inp.value, 10) || 0));
+    applyToothMark(g, t); toothEditChanged();
+  } }, row, '标记');
+  h('button', { onclick: () => {
+    g.watched = []; g.marks = {}; toothEditChanged();
+  } }, row, '全清');
+}
+
+function applyToothMark(g, i) {
+  g.marks = g.marks || {};
+  g.watched = gearWatched(g);
+  const set = new Set(g.watched);
+  if (toothMarkMode === 'clear') {
+    delete g.marks[i];
+    set.delete(i);
+  } else if (toothMarkMode === 'watch') {
+    if (set.has(i)) set.delete(i); else set.add(i);
+  } else {
+    if (g.marks[i] === toothMarkMode) delete g.marks[i];
+    else g.marks[i] = toothMarkMode;
+  }
+  g.watched = [...set].sort((a, b) => a - b);
+}
+
+/* ---------------- 齿对装配：后端数据 ---------------- */
+async function fetchTeethPreview(stateClone) {
+  const turns = parseFloat($('#tt-turns')?.value) || stateClone.observeTurns || 2;
+  const resp = await fetch('/api/teeth', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ state: stateClone, observeTurns: turns }),
+  });
+  return resp.json();
+}
+
+$('#btn-tt-asm')?.addEventListener('click', async () => {
+  const btn = $('#btn-tt-asm');
+  btn.disabled = true; btn.textContent = '枚举中…';
+  try {
+    const resp = await fetch('/api/teeth-assembly', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        state,
+        offsetRange: parseInt($('#tt-range').value, 10) || 0,
+        observeTurns: parseFloat($('#tt-turns').value) || state.observeTurns || 2,
+      }),
+    });
+    const data = await resp.json();
+    assemblyCands = (data.candidates || []).map((c, i) => ({ ...c, _idx: i }));
+    asmMeta = data;
+    selectedAsmCand = -1;
+    const meta = $('#tt-asm-meta');
+    meta.textContent =
+      (data.note ? data.note + ' ' : '') +
+      (data.totalMatched != null
+        ? `共 ${data.totalMatched} 个候选，显示前 ${assemblyCands.length}；枚举节点 ${data.nodes}${data.truncated ? '（达到上限已截断）' : ''}`
+        : '');
+    renderTeethPanel();
+  } finally {
+    btn.disabled = false; btn.textContent = '枚举装配候选';
+  }
+});
+
+function renderAssemblyList() {
+  const ol = $('#tt-asm-list');
+  if (!ol) return;
+  ol.innerHTML = '';
+  assemblyCands.forEach((c, i) => {
+    const li = h('li', { class: 'cand' + (i === selectedAsmCand ? ' selected' : '') +
+      (c.isCurrent ? ' current-cand' : '') }, ol);
+    const head = h('div', { class: 'head' }, li);
+    h('span', {}, head, c.isCurrent ? '当前装配' : `#${i} 装配相位`);
+    h('span', { class: 'err', style: c.neverMeet ? 'color:var(--ok)' : '' }, head,
+      c.neverMeet ? '关注齿窗内不相遇' : `相遇 ${c.watchMeetings} 次`);
+    const deltaTxt = Object.entries(c.deltas).length
+      ? Object.entries(c.deltas).map(([gid, d]) => `${c.names[gid] || gid} ${d > 0 ? '+' : ''}${d}齿`).join('；')
+      : '不改动任何齿轮相位';
+    h('div', { class: 'delta' }, li, deltaTxt);
+    h('div', { class: 'meta' }, li,
+      `最早相遇：${c.neverMeet ? '—' : c.firstDeg != null ? c.firstDeg.toFixed(1) + '°' : '—'}` +
+      `；相位改动合计 ${c.phaseChange} 齿距`);
+    const acts = h('div', { class: 'actions' }, li);
+    if (!c.isCurrent) {
+      h('button', { onclick: e => { e.stopPropagation(); previewAsmCand(i); } },
+        acts, i === selectedAsmCand ? '✓ 叠加中' : '叠加当前装配');
+      h('button', { class: 'primary', onclick: e => { e.stopPropagation(); adoptAsmCand(i); } },
+        acts, '采纳并另存方案');
+    }
+  });
+  // 锁定/变量信息
+  if (asmMeta && (asmMeta.locked || asmMeta.variables)) {
+    const meta = $('#tt-asm-meta');
+    const lockTxt = (asmMeta.locked || []).map(l => `${l.name}（偏移${l.offset}）`).join('、');
+    if (lockTxt) meta.title = `带键锁定：${lockTxt}`;
+  }
+}
+
+async function previewAsmCand(i) {
+  const c = assemblyCands[i];
+  if (!c) return;
+  if (selectedAsmCand === i) { clearAsmPreview(); return; }
+  selectedAsmCand = i;
+  const clone = JSON.parse(JSON.stringify(state));
+  for (const g of clone.gears) {
+    const d = c.deltas[g.id];
+    if (d) g.offset = (Number.isInteger(g.offset) ? g.offset : 0) + d;
+  }
+  try {
+    c._previewData = await fetchTeethPreview(clone);
+  } catch (e) { /* ignore */ }
+  resetMotion();
+  render();
+  flashHint('已叠加装配相位预览（未写入）；播放可检查齿对与标记齿相遇');
+}
+
+function clearAsmPreview() {
+  selectedAsmCand = -1;
+  resetMotion();
+  render();
+}
+
+async function adoptAsmCand(i) {
+  const c = assemblyCands[i];
+  if (!c) return;
+  for (const g of state.gears) {
+    const d = c.deltas[g.id];
+    if (d) g.offset = (Number.isInteger(g.offset) ? g.offset : 0) + d;
+  }
+  selectedAsmCand = -1;
+  assemblyCands = [];
+  asmMeta = null;
+  resetMotion();
+  setPlay('none');
+  markDirty();
+  render();
+  // 采纳后另存方案到 SQLite
+  const deltaTxt = Object.entries(c.deltas)
+    .map(([gid, d]) => `${c.names[gid] || gid}${d > 0 ? '+' : ''}${d}`).join(',');
+  const name = `装配相位 ${new Date().toLocaleString('zh-CN', { hour12: false })}（${deltaTxt || '原样'}）`;
+  await fetch('/api/alternatives', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name, state, baselineId: baseline ? baseline.id : null,
+      target: null, ratio: analysis.ratio ? analysis.ratio.s : null, errorPct: null,
+    }),
+  });
+  scheduleTeethFetch();
+  flashHint('已采纳装配偏移并另存方案（方案库可载入/设为基线）');
+  switchTab('library');
+  refreshLibrary();
+}
+
+/* ---------------- 搜索面板（原有） ---------------- */
 $('#btn-search').addEventListener('click', async () => {
   const btn = $('#btn-search');
   btn.disabled = true; btn.textContent = '搜索中…';
@@ -1764,7 +2397,14 @@ function normalizeState(st) {
     if (g.ha == null) g.ha = 1.0;
     if (g.c == null) g.c = 0.25;
     if (g.x == null) g.x = 0.0;
+    /* 齿序/装配字段 */
+    if (typeof g.zeroDeg !== 'number') g.zeroDeg = 0;
+    if (!Number.isInteger(g.offset)) g.offset = 0;
+    if (typeof g.phaseLocked !== 'boolean') g.phaseLocked = false;
+    if (!Array.isArray(g.watched)) g.watched = [];
+    if (!g.marks || typeof g.marks !== 'object') g.marks = {};
   }
+  if (typeof st.observeTurns !== 'number' || !(st.observeTurns > 0)) st.observeTurns = 2;
   for (const p of st.planets) {
     if (p.phase == null) p.phase = 0;
     for (const k of ['sunShaftId', 'ringShaftId', 'carrierShaftId'])
@@ -1845,6 +2485,7 @@ function markDirty() {
   tag.className = 'savestate dirty';
   clearTimeout(saveTimer);
   saveTimer = setTimeout(saveProject, 700);
+  if (selectedAsmCand < 0) scheduleTeethFetch();
 }
 async function saveProject() {
   await fetch('/api/project', {
@@ -1867,6 +2508,7 @@ function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === `panel-${name}`));
   if (name === 'library') refreshLibrary();
+  if (name === 'teeth' && selectedAsmCand < 0 && teethVer !== stateVersion) scheduleTeethFetch();
 }
 document.querySelectorAll('.tab').forEach(t =>
   t.addEventListener('click', () => switchTab(t.dataset.tab)));
@@ -1899,4 +2541,5 @@ $('#btn-clear').addEventListener('click', () => {
     markDirty();
   }
   render();
+  scheduleTeethFetch();
 })();
