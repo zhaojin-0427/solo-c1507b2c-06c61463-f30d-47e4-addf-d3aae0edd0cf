@@ -190,9 +190,38 @@ def _merge_layouts(spec: dict, state: dict) -> dict:
 
 # ----------------------------- 动力定向 -----------------------------
 
-def _orient(state, tbl, speeds, input_id, issues):
+def speed_ratios(state: dict, tbl: dict, input_id):
+    """从工况实际选中的输入轴开始，沿普通啮合边 BFS 传播精确转速比
+    （n轴/n输入；外啮合 −zA/zB，内啮合 +zA/zB）。不依赖全局 inputId，
+    因此用户在任一连通分量中选输入轴都能正确传播。
+    返回 {shaftId: Fraction}；与输入轴不同分量的轴不在表内。"""
+    shafts = {s["id"] for s in state.get("shafts", [])}
+    if input_id not in shafts:
+        return {}
+    adj = defaultdict(list)
+    for info in tbl.values():
+        sa, sb = info["shaftA"], info["shaftB"]
+        if sa in shafts and sb in shafts:
+            sign = 1 if info["internal"] else -1
+            f = sign * Fraction(info["zA"], info["zB"])   # n_sb / n_sa
+            adj[sa].append((sb, f))
+            adj[sb].append((sa, Fraction(1, 1) / f))
+    ratio = {input_id: Fraction(1, 1)}
+    q = deque([input_id])
+    while q:
+        cur = q.popleft()
+        for nb, f in adj.get(cur, ()):
+            v = ratio[cur] * f
+            if nb in ratio:
+                continue
+            ratio[nb] = v
+            q.append(nb)
+    return ratio
+
+
+def _orient(state, tbl, ratio, input_id, issues):
     """按 BFS 深度把每条啮合边从输入端定向：返回 {meshId: (driverShaft, drivenShaft,
-    driverGear, drivenGear, zdriven, depth)} 与每轴深度。"""
+    driverGear, drivenGear, zdriven, depth)} 与每轴深度。ratio 为所选输入轴的转速比。"""
     shafts = {s["id"] for s in state.get("shafts", [])}
     adj = defaultdict(list)
     for mid, info in tbl.items():
@@ -217,7 +246,7 @@ def _orient(state, tbl, speeds, input_id, issues):
         da, db = depth.get(sa), depth.get(sb)
         if da is None or db is None:
             issues.append({"severity": "info", "code": "OFF_PATH",
-                           "message": "啮合 %s→%s 不在输入轴动力链上，未参与受载计算"
+                           "message": "啮合 %s→%s 不在所选输入轴的动力链上，未参与受载计算"
                            % (info["nameA"], info["nameB"]),
                            "refs": {"mesh": mid}})
             continue
@@ -226,9 +255,9 @@ def _orient(state, tbl, speeds, input_id, issues):
         elif db < da:
             drv, dnn, gd, gn, zd = sb, sa, info["gearB"], info["gearA"], info["zA"]
         else:
-            # 同深度（闭环/并联回边）：转速高的一侧为主动，其次按 id 稳定定向
-            va, vb = abs(float(speeds.get(sa, {"v": 0})["v"])) if sa in speeds else 0, \
-                     abs(float(speeds.get(sb, {"v": 0})["v"])) if sb in speeds else 0
+            # 同深度（闭环/并联回边）：|转速比|大的一侧为主动（减速时小轮带大轮）
+            va = abs(float(ratio.get(sa, 0))) if sa in ratio else 0.0
+            vb = abs(float(ratio.get(sb, 0))) if sb in ratio else 0.0
             if va + 1e-12 < vb:
                 drv, dnn, gd, gn, zd = sb, sa, info["gearB"], info["gearA"], info["zA"]
             else:
@@ -312,9 +341,7 @@ def bearing_solve(face_loads, bearings, length, min_gap):
 # ----------------------------- 主分析 -----------------------------
 
 def analyze_case(state: dict, spec: dict) -> dict:
-    an = kinematics.analyze(state)
-    speeds = an.get("speeds", {})
-    rpms0 = an.get("rpms", {})
+    an = kinematics.analyze(state)   # 仅用于结构诊断，转速从所选输入轴另行传播
     tbl = mesh_table(state)
     shaft_objs = {s["id"]: s for s in state.get("shafts", [])}
     layouts = _merge_layouts(spec, state)
@@ -334,7 +361,9 @@ def analyze_case(state: dict, spec: dict) -> dict:
     if rpm0 <= 0:
         add("error", "BAD_RPM", "输入转速必须为正数（rpm）")
 
-    oriented, depth = _orient(state, tbl, speeds, input_id, issues)
+    # 从工况实际选中的输入轴传播转速比（不依赖全局 inputId）
+    ratio = speed_ratios(state, tbl, input_id)
+    oriented, depth = _orient(state, tbl, ratio, input_id, issues)
     if input_id in shaft_objs and not oriented:
         add("error", "INPUT_IDLE", "输入轴没有任何可达啮合，无法传播载荷")
 
@@ -382,14 +411,10 @@ def analyze_case(state: dict, spec: dict) -> dict:
         if len(outs) == 1:
             ratios[outs[0][0]] = 1.0
 
-    # ---- 功率/转矩定点传播 ----
+    # ---- 功率/转矩定点传播（转速比从所选输入轴 BFS 得到）----
     omega0 = 2.0 * math.pi * rpm0 / 60.0
     p_in_kw = T0 * omega0 / 1000.0 if T0 > 0 and rpm0 > 0 else 0.0
-    speed_v = {sid: (Fraction(v["s"]) if v else Fraction(0)) for sid, v in speeds.items()}
-    n_ratio = {}
-    if input_id in speed_v and speed_v[input_id] != 0:
-        for sid, v in speed_v.items():
-            n_ratio[sid] = v / speed_v[input_id]
+    n_ratio = ratio
     mesh_p_kw = {mid: 0.0 for mid in oriented}
     shaft_p = {sid: 0.0 for sid in shaft_objs}
     order = sorted((sid for sid in shaft_objs if sid in depth),
@@ -400,7 +425,7 @@ def analyze_case(state: dict, spec: dict) -> dict:
             p = p_in_kw if sid == input_id else 0.0
             for mid in incoming.get(sid, ()):
                 info = tbl[mid]
-                eta = _mesh_param(spec, mid, "efficiency", 0.98)
+                eta = _mesh_efficiency(spec, mid)
                 p += mesh_p_kw[mid] * eta
             if abs(p - shaft_p[sid]) > 1e-9:
                 changed = max(changed, abs(p - shaft_p[sid]))
@@ -416,14 +441,17 @@ def analyze_case(state: dict, spec: dict) -> dict:
     for mid, o in oriented.items():
         info = tbl[mid]
         ka = _mesh_param(spec, mid, "loadFactor", 1.0)
-        eta = _mesh_param(spec, mid, "efficiency", 0.98)
+        eta = _mesh_efficiency(spec, mid)
         sd, sn = o["driver"], o["driven"]
         nd = float(n_ratio.get(sd, Fraction(0))) * rpm0 if sd in n_ratio else 0.0
         nn = float(n_ratio.get(sn, Fraction(0))) * rpm0 if sn in n_ratio else 0.0
         wd = 2.0 * math.pi * abs(nd) / 60.0
         r_d = info["m"] * (info["zA"] if o["gearDriver"] == info["gearA"] else info["zB"]) / 2000.0
         p_kw = mesh_p_kw[mid]
-        torque = p_kw * 1000.0 / wd if wd > 1e-9 and r_d > 0 else 0.0
+        # 实际传入啮合的功率 = P级·η：η=0 时该级不传递，转矩与啮合力全为 0，
+        # 差值在主动侧作为损耗；下游功率在传播时已乘 η，自然归零。
+        p_tx = p_kw * eta
+        torque = p_tx * 1000.0 / wd if wd > 1e-9 and r_d > 0 else 0.0
         ft = torque / r_d if r_d > 0 else 0.0
         ft_star = ft * ka
         fr = ft_star * math.tan(math.radians(info["alpha"]))
@@ -463,6 +491,15 @@ def analyze_case(state: dict, spec: dict) -> dict:
 
     # ---- 轴系合成 ----
     gear_objs = {g["id"]: g for g in state.get("gears", [])}
+    # 每根轴上承载齿轮所属的啮合（支点重合等诊断定位相关啮合用）
+    gear_to_meshes = defaultdict(list)
+    for mid, o in oriented.items():
+        gear_to_meshes[o["gearDriver"]].append(mid)
+        gear_to_meshes[o["gearDriven"]].append(mid)
+    shaft_meshes = defaultdict(list)
+    for g in state.get("gears", []):
+        for mid in gear_to_meshes.get(g["id"], ()):
+            shaft_meshes[g.get("shaftId")].append(mid)
     shafts_out = {}
     all_reactions = []
     for sid, s in shaft_objs.items():
@@ -493,8 +530,12 @@ def analyze_case(state: dict, spec: dict) -> dict:
                        for b in lay["bearings"]]
         sol = bearing_solve(face_loads, bearings_in, lay["length"], lay["minGap"])
         if sol["coincident"]:
+            aff = shaft_meshes.get(sid, [])
             add("error", "BEARINGS_COINCIDENT",
-                "轴「%s」两处轴承支点重合或缺失，载荷无法平衡" % _sname(s), shaft=sid)
+                "轴「%s」两处轴承支点重合或缺失，载荷无法平衡（涉及啮合：%s）"
+                % (_sname(s), "、".join(mesh_res[m]["name"] for m in aff)
+                   if aff else "无"),
+                shaft=sid, **{("m%d" % k): m for k, m in enumerate(aff[:6])})
         for v in sol["violations"]:
             sev = "error" if v["code"] != "TOO_CLOSE" else "warning"
             add(sev, v["code"], "轴「%s」：%s" % (_sname(s), v["message"]), shaft=sid)
@@ -580,10 +621,22 @@ def analyze_case(state: dict, spec: dict) -> dict:
     }
 
 
+def _mesh_efficiency(spec, mid):
+    """效率：允许显式 0（该级完全耗损，下游功率/转矩/啮合力归零）；
+    缺省或非法（非数、越界）才回退 0.98。"""
+    ms = (spec.get("meshes", {}) or {}).get(mid, {}) or {}
+    v = ms.get("efficiency")
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return 0.98
+    if v < 0.0 or v > 1.0:
+        return 0.98
+    return float(v)
+
+
 def _mesh_param(spec, mid, key, default):
     ms = (spec.get("meshes", {}) or {}).get(mid, {}) or {}
     v = ms.get(key)
-    if not isinstance(v, (int, float)) or v <= 0:
+    if not isinstance(v, (int, float)) or isinstance(v, bool) or v <= 0:
         return default
     if key == "efficiency":
         return min(1.0, float(v))

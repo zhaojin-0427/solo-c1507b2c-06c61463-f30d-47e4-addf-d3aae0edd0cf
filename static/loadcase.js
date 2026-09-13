@@ -28,7 +28,9 @@ function lcFingerprint(st) {
     if (!ga || !gb) { items.push([e.id, 'broken']); continue; }
     const sa = S[ga.shaftId] || {}, sb = S[gb.shaftId] || {};
     items.push([e.id, ga.z, ga.module, ga.x || 0, ga.pressureAngle || 20,
+      !!ga.internal,
       gb.z, gb.module, gb.x || 0, gb.pressureAngle || 20,
+      !!gb.internal,
       +sa.x || 0, +sa.y || 0, +sb.x || 0, +sb.y || 0]);
   }
   items.sort((a, b) => String(a[0]).localeCompare(String(b[0])));
@@ -325,6 +327,26 @@ function lcBuildShaftCard(wrap, sid) {
   mkNum('可调范围 −mm', lay.adjMin, 5, v => { lay.adjMin = Math.max(0, v || 0); });
   mkNum('可调范围 +mm', lay.adjMax, 5, v => { lay.adjMax = Math.max(0, v || 0); });
 
+  // 两处轴承：位置 x 与径向额定载荷 Cr（位置也可直接输入，与 SVG 拖动同步）
+  const bGrid = h('div', { class: 'lc-bearing-grid' }, card);
+  lay.bearings.forEach((b, i) => {
+    const lab = h('label', {}, bGrid, `轴承 ${i + 1}（${b.id}）Cr N`);
+    const inp = h('input', { type: 'number', step: '50', min: '0',
+      value: b.Cr, 'data-cr': b.id }, lab);
+    inp.addEventListener('input', () => {
+      const v = parseFloat(inp.value);
+      b.Cr = Number.isFinite(v) && v > 0 ? v : 0;
+      lcSpecChanged();
+    });
+    const labX = h('label', {}, bGrid, `位置 x mm`);
+    const inpX = h('input', { type: 'number', step: '1', min: '0',
+      value: b.x, 'data-crx': b.id }, labX);
+    inpX.addEventListener('input', () => {
+      const v = parseFloat(inpX.value);
+      if (Number.isFinite(v)) { b.x = v; lcSpecChanged(); }
+    });
+  });
+
   const svgWrap = h('div', { class: 'lc-svg-wrap' }, card);
   const svg = svgEl('svg', { class: 'lc-svg', xmlns: 'http://www.w3.org/2000/svg' }, svgWrap);
   const defs = svgEl('defs', {}, svg);
@@ -374,6 +396,16 @@ function lcUpdateShaftCard(sid) {
   const { axisY } = LC_VIEW;
   const locks = new Set(lay.locked || []);
   lay.bearings.forEach(b => { if (b.locked) locks.add(b.id); });
+
+  // 同步轴承 Cr / x 输入框（拖动或分析返回后；聚焦中的输入不回写，避免打断键入）
+  card.querySelectorAll('[data-cr]').forEach(inp => {
+    const b = lay.bearings.find(x => x.id === inp.dataset.cr);
+    if (b && document.activeElement !== inp) inp.value = b.Cr ?? '';
+  });
+  card.querySelectorAll('[data-crx]').forEach(inp => {
+    const b = lay.bearings.find(x => x.id === inp.dataset.crx);
+    if (b && document.activeElement !== inp) inp.value = b.x ?? '';
+  });
 
   // —— 第 1 层：轴体与标尺（可随时重画，不影响拖动元素的 pointer capture）——
   const lShaft = svg.querySelector('.lc-layer-shaft');
@@ -617,12 +649,20 @@ function lcLocate(it) {
     card.classList.add('locate-flash');
     setTimeout(() => card.classList.remove('locate-flash'), 1600);
   }
-  const mid = refs.mesh || refs.m0;
-  const mc = mid && document.querySelector(`#lc-meshes .lc-mesh-card[data-mesh="${CSS.escape(mid)}"]`);
-  if (mc) {
-    mc.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    mc.classList.add('locate-flash');
-    setTimeout(() => mc.classList.remove('locate-flash'), 1600);
+  const mid = refs.mesh;
+  const mids = [];
+  if (mid) mids.push(mid);
+  // 支点重合/分支不闭合等诊断在 refs.m0..mN 中给出全部相关啮合
+  for (let k = 0; refs['m' + k]; k++) mids.push(refs['m' + k]);
+  let firstMc = null;
+  for (const m of mids) {
+    const mc = document.querySelector(`#lc-meshes .lc-mesh-card[data-mesh="${CSS.escape(m)}"]`);
+    if (mc) {
+      mc.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      mc.classList.add('locate-flash');
+      setTimeout(() => mc.classList.remove('locate-flash'), 1600);
+      firstMc = firstMc || mc;
+    }
   }
 }
 

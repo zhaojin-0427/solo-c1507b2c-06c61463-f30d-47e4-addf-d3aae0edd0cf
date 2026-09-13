@@ -486,6 +486,15 @@ h3:first-child { margin-top: 4px; }
   width: 100%; padding: 3px 6px; border: 1px solid var(--line);
   border-radius: 5px; font: inherit; background: #fff;
 }
+.lc-bearing-grid {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: 4px 10px; margin: 2px 0 4px;
+}
+.lc-bearing-grid label { font-size: 11px; color: var(--muted); display: block; }
+.lc-bearing-grid input {
+  width: 100%; padding: 3px 6px; border: 1px solid var(--line);
+  border-radius: 5px; font: inherit; background: #fff;
+}
 .lc-svg-wrap { margin-top: 4px; overflow-x: auto; }
 .lc-svg { width: 100%; min-height: 100px; background: #f8f5ee;
   border: 1px solid var(--line); border-radius: 8px; }
