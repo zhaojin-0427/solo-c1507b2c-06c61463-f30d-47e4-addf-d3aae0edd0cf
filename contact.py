@@ -366,8 +366,8 @@ def _meeting(c, ia, ib, k0, N, P, marks_a, marks_b):
 def _mesh_score(c, za, zb, i0a, i0b, watch_a, watch_b, N):
     """给定初始齿号后，统计观察窗内关注齿相遇次数与最早相遇输入转数（None=不相遇）。
 
-    事件 k：ia = i0a − k (mod za)；外啮合 ib = i0b + k (mod zb)，
-    内啮合 ib = i0b − k (mod zb)。s=±1 不改变 gcd 同余类，故无需单列。
+    事件 k：ia = i0a − s·k (mod za)；外啮合 ib = i0b + s·k (mod zb)，
+    内啮合 ib = i0b − s·k (mod zb)，s 为主动轴转向（相对输入）。
     """
     if not watch_a or not watch_b or N <= 0:
         return 0, None
@@ -377,12 +377,13 @@ def _mesh_score(c, za, zb, i0a, i0b, watch_a, watch_b, N):
     earliest = None
     rate = c["rate"]
     internal = c["internal"]
+    s = c["shaftSign"]
     for ia in watch_a:
-        # k ≡ i0a − ia (mod za)
-        r1 = (i0a - ia) % za
+        # s·k ≡ i0a − ia (mod za)
+        r1 = ((i0a - ia) * s) % za
         for ib in watch_b:
-            # 外啮合 k ≡ ib − i0b (mod zb)；内啮合 k ≡ i0b − ib (mod zb)
-            r2 = ((ib - i0b) if not internal else (i0b - ib)) % zb
+            # 外啮合 s·k ≡ ib − i0b；内啮合 s·k ≡ i0b − ib (mod zb)
+            r2 = (((ib - i0b) if not internal else (i0b - ib)) * s) % zb
             k0 = _crt2(r1, za, r2, zb)
             if k0 is None or k0 >= N:
                 continue

@@ -640,8 +640,8 @@ function render() {
   applyWorldTransform();
   updateRotorTransforms();
   updatePlanetTransforms();
-  updateMatrixCurrentCell();
-  renderPanels();
+  renderPanels();              // 先建出接触矩阵 DOM
+  updateMatrixCurrentCell();   // 再按当前输入角描边当前齿对格
 }
 
 /* ---------------- 行星级 SVG ---------------- */
@@ -1712,6 +1712,7 @@ function applyMotionTheta(theta) {
   }
   updateRotorTransforms();
   updatePlanetTransforms();
+  updateMatrixCurrentCell();
 }
 
 function activePlayState() {
