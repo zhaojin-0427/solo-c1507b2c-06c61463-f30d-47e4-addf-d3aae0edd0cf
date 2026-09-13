@@ -448,10 +448,10 @@ def analyze_case(state: dict, spec: dict) -> dict:
         wd = 2.0 * math.pi * abs(nd) / 60.0
         r_d = info["m"] * (info["zA"] if o["gearDriver"] == info["gearA"] else info["zB"]) / 2000.0
         p_kw = mesh_p_kw[mid]
-        # 实际传入啮合的功率 = P级·η：η=0 时该级不传递，转矩与啮合力全为 0，
-        # 差值在主动侧作为损耗；下游功率在传播时已乘 η，自然归零。
-        p_tx = p_kw * eta
-        torque = p_tx * 1000.0 / wd if wd > 1e-9 and r_d > 0 else 0.0
+        # 转矩与啮合力按输入轴传入本级的功率（p_kw）正常计算：η 只影响该级输出
+        # 与下游（传播时已乘 η），即便 η=0（本级相当于制动/全部耗损），主动轮
+        # 仍承受完整齿面力，两齿受力等大反向；powerOutKw/lossKw 体现全部损失。
+        torque = p_kw * 1000.0 / wd if wd > 1e-9 and r_d > 0 else 0.0
         ft = torque / r_d if r_d > 0 else 0.0
         ft_star = ft * ka
         fr = ft_star * math.tan(math.radians(info["alpha"]))
@@ -535,7 +535,7 @@ def analyze_case(state: dict, spec: dict) -> dict:
                 "轴「%s」两处轴承支点重合或缺失，载荷无法平衡（涉及啮合：%s）"
                 % (_sname(s), "、".join(mesh_res[m]["name"] for m in aff)
                    if aff else "无"),
-                shaft=sid, **{("m%d" % k): m for k, m in enumerate(aff[:6])})
+                shaft=sid, **{("m%d" % k): m for k, m in enumerate(aff)})
         for v in sol["violations"]:
             sev = "error" if v["code"] != "TOO_CLOSE" else "warning"
             add(sev, v["code"], "轴「%s」：%s" % (_sname(s), v["message"]), shaft=sid)
