@@ -7,9 +7,9 @@
   "observeId":  观察轴 id,
   "reversalDeg": 换向角（度，输入轴反向摆角幅度）,
   "meshes": { meshId: {
-      "jn":        法向齿侧间隙 mm（实测值）,
-      "jnLocked":  锁定实测间隙（搜索组合时该级不参变）,
-      "grade":     间隙等级 id（未锁定时按等级给名义侧隙）,
+      "jn":        法向齿侧间隙 mm（已录入实测值，空程分析始终使用）,
+      "jnLocked":  锁定实测间隙（仅限制搜索组合时该级不参变）,
+      "grade":     间隙等级 id（搜索候选的等级；前端可用来快捷填入 jn）,
       "dA":        中心距调整量 mm（搜索方案写回；草稿默认 0）,
       "xSum":      变位系数和（搜索方案写回；草稿默认 0）,
       "centerTol": 中心距公差 ±mm,
@@ -100,14 +100,9 @@ def mesh_table(state: dict) -> dict:
 
 
 def effective_jn(info: dict, ms: dict) -> float:
-    """工况下一处啮合的名义法向侧隙：锁定实测值，否则由等级+中心距调整+变位和合成。"""
-    if ms.get("jnLocked"):
-        return max(0.0, _num(ms.get("jn"), 0.0))
-    grade = GRADE_MAP.get(ms.get("grade"), GRADE_MAP["g2"])
-    sin_a = math.sin(math.radians(info["alpha"]))
-    jn = grade["factor"] * info["m"] \
-        + 2.0 * (_num(ms.get("dA"), 0.0) + _num(ms.get("xSum"), 0.0) * info["m"]) * sin_a
-    return max(0.0, jn)
+    """空程分析使用的名义法向侧隙：始终取已录入的实测值 jn。
+    jnLocked 只限制搜索能否调整该级（见 search），不影响分析。"""
+    return max(0.0, _num(ms.get("jn"), 0.0))
 
 
 # ----------------------------- 路径与折算系数 -----------------------------
@@ -265,7 +260,7 @@ def _evaluate(prep: dict, spec: dict) -> dict:
                 conflicts.append({"pathA": i, "pathB": j, "meshes": diff})
     compatible = not conflicts and lo_all <= hi_all + 1e-9
 
-    # 主路径：啮合数最少（其次区间最窄），侧栏与动画按它展开
+    # 主路径：啮合数最少（其次区间最窄），侧栏与动画默认按它展开
     primary = 0
     if path_res:
         primary = min(range(len(path_res)),
@@ -283,7 +278,8 @@ def _evaluate(prep: dict, spec: dict) -> dict:
         "conflicts": conflicts,
         "conflictMeshes": sorted(conflict_meshes),
         "paths": [{"index": k, "meshes": p["meshes"], "meshCount": len(p["meshes"]),
-                   "lostMin": _r4(p["lostMin"]), "lostMax": _r4(p["lostMax"])}
+                   "lostMin": _r4(p["lostMin"]), "lostMax": _r4(p["lostMax"]),
+                   "stages": p["stages"]}
                   for k, p in enumerate(path_res)],
         "primaryPath": primary,
         "stages": stages,
@@ -355,13 +351,12 @@ def search(state: dict, spec: dict, params: dict) -> dict:
         info = prep["meshInfo"][mid]
         ms = ms_all.get(mid, {}) or {}
         m, sin_a = info["m"], math.sin(math.radians(info["alpha"]))
+        jn0 = max(0.0, _num(ms.get("jn"), 0.0))
         if ms.get("jnLocked"):
             per_mesh.append([{"grade": ms.get("grade", "g2"),
                               "dA": _num(ms.get("dA")), "xSum": _num(ms.get("xSum")),
-                              "locked": True, "change": 0.0}])
+                              "jn": jn0, "locked": True, "change": 0.0}])
             continue
-        cur_f = GRADE_MAP.get(ms.get("grade"), GRADE_MAP["g2"])["factor"]
-        da0, xs0 = _num(ms.get("dA")), _num(ms.get("xSum"))
         best_by_jn = {}
         for gid in grade_ids:
             f = GRADE_MAP[gid]["factor"]
@@ -370,14 +365,15 @@ def search(state: dict, spec: dict, params: dict) -> dict:
                     jn = f * m + 2.0 * (da + xs * m) * sin_a
                     if jn < -1e-9:
                         continue
-                    change = abs(da - da0) + abs(xs - xs0) * m + abs(f - cur_f) * m
-                    key = round(max(0.0, jn), 4)
+                    jn = max(0.0, jn)
+                    # 改动量：中心距调整 + 变位和 + 相对已录入实测值的侧隙改变
+                    change = abs(da) + abs(xs) * m + abs(jn - jn0)
+                    key = round(jn, 4)
                     if key not in best_by_jn or change < best_by_jn[key]["change"]:
                         best_by_jn[key] = {"grade": gid, "dA": da, "xSum": xs,
+                                           "jn": round(jn, 5),
                                            "change": round(change, 4)}
-        opts = sorted(best_by_jn.values(),
-                      key=lambda o: GRADE_MAP[o["grade"]]["factor"] * m
-                      + 2.0 * (o["dA"] + o["xSum"] * m) * sin_a)
+        opts = sorted(best_by_jn.values(), key=lambda o: o["jn"])
         per_mesh.append(opts)
 
     nodes = [0]
@@ -408,6 +404,7 @@ def search(state: dict, spec: dict, params: dict) -> dict:
                 trial[mid]["grade"] = opt["grade"]
                 trial[mid]["dA"] = opt["dA"]
                 trial[mid]["xSum"] = opt["xSum"]
+                trial[mid]["jn"] = opt["jn"]     # 分析始终使用已录入/合成 jn
                 sig.append((mid, opt["grade"], opt["dA"], opt["xSum"]))
             sig = tuple(sig)
             if sig in seen:
@@ -420,7 +417,8 @@ def search(state: dict, spec: dict, params: dict) -> dict:
             else:
                 worst = 1e9 + (res["gap"] or 0.0)
             results.append({
-                "meshes": {mid: {"grade": o["grade"], "dA": o["dA"], "xSum": o["xSum"]}
+                "meshes": {mid: {"grade": o["grade"], "dA": o["dA"],
+                                 "xSum": o["xSum"], "jn": o["jn"]}
                            for mid, o in zip(mesh_ids, chosen)},
                 "worst": _r4(worst if worst < 1e9 else None),
                 "lostMin": res["lostMin"], "lostMax": res["lostMax"],
@@ -436,15 +434,9 @@ def search(state: dict, spec: dict, params: dict) -> dict:
             return
         mid = mesh_ids[idx]
         c, b = coef.get(mid, (0.0, 0.0))
-        info = prep["meshInfo"][mid]
-        sin_a = math.sin(math.radians(info["alpha"]))
         for opt in per_mesh[idx]:
-            jn = max(0.0, GRADE_MAP[opt["grade"]]["factor"] * info["m"]
-                     + 2.0 * (opt["dA"] + opt["xSum"] * info["m"]) * sin_a) \
-                if not opt.get("locked") else effective_jn(info, {
-                    "jnLocked": True, "jn": ms_all.get(mid, {}).get("jn")})
             dfs(idx + 1, chosen + [opt],
-                partial_worst + c * jn + b,
+                partial_worst + c * opt["jn"] + b,
                 partial_change + opt["change"])
             if truncated[0]:
                 return

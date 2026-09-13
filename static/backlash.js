@@ -27,6 +27,7 @@ let blSearchRes = [];
 let blSelSol = -1;
 let blSolSpec = null, blSolResult = null;   // 叠加预览中的搜索方案
 let blCmpResult = null, blCmpLabel = '';    // 对照基线版本的分析结果
+let blPathIdx = 0;                          // 当前展开的路径（多路径/闭环时可切换）
 
 /* ---------------- 快照与过期 ---------------- */
 function blFingerprint(st) {
@@ -37,7 +38,8 @@ function blFingerprint(st) {
     const ga = G[e.gearA], gb = G[e.gearB];
     if (!ga || !gb) { items.push([e.id, 'broken']); continue; }
     const sa = S[ga.shaftId] || {}, sb = S[gb.shaftId] || {};
-    items.push([e.id, ga.z, ga.module, ga.x || 0, gb.z, gb.module, gb.x || 0,
+    items.push([e.id, ga.z, ga.module, ga.x || 0, ga.pressureAngle || 20,
+      gb.z, gb.module, gb.x || 0, gb.pressureAngle || 20,
       +sa.x || 0, +sa.y || 0, +sb.x || 0, +sb.y || 0]);
   }
   items.sort((a, b) => String(a[0]).localeCompare(String(b[0])));
@@ -93,7 +95,22 @@ function blRefreshSnapshot() {
 function blResetResult() {
   blResult = null; blSvgRefs = null; blMeshKey = '';
   blSearchRes = []; blSelSol = -1; blSolSpec = null; blSolResult = null;
-  blAngle = 0; blPlaying = false;
+  blAngle = 0; blPlaying = false; blPathIdx = 0;
+}
+
+/* 当前展开的路径与其逐级数据（每条路径都有完整 stages） */
+function blActivePath() {
+  if (!blResult || !(blResult.paths || []).length) return null;
+  const idx = Math.min(blPathIdx, blResult.paths.length - 1);
+  return blResult.paths[idx];
+}
+function blActiveStages() {
+  const p = blActivePath();
+  return p ? (p.stages || []) : [];
+}
+function blActiveSwitchDeg() {
+  const st = blActiveStages();
+  return st.length ? st[st.length - 1].switchDeg : 0;
 }
 
 function blSaveDraft() {
@@ -117,6 +134,7 @@ async function blAnalyze() {
     const data = await resp.json();
     if (token !== blToken) return;
     blResult = data;
+    blPathIdx = data.primaryPath || 0;
   } catch (e) {
     if (token === blToken) blResult = { ok: false, issues: [
       { severity: 'error', message: '计算失败：' + e }] };
@@ -134,7 +152,7 @@ function blSpecChanged() {
 /* ---------------- 面板渲染 ---------------- */
 function blMaxAngle() {
   if (!blResult) return 30;
-  return Math.max(blResult.reversalDeg || 30, (blResult.totalSwitchDeg || 0) * 1.15, 5);
+  return Math.max(blResult.reversalDeg || 30, blActiveSwitchDeg() * 1.15, 5);
 }
 
 function blRender() {
@@ -149,6 +167,7 @@ function blRender() {
   blRenderMeshCards();
   blUpdateMeshCardResults();
   blRenderSummary();
+  blRenderPathBtns();
   blRenderStageList();
   blDrawSVG();
   const sl = $('#bl-angle');
@@ -218,20 +237,26 @@ function blRenderMeshCards() {
       inp.addEventListener('input', () => { onch(parseFloat(inp.value)); blSpecChanged(); });
       return inp;
     };
-    mkNum('法向侧隙 jn mm（实测）', ms.jn, 0.005, v => { ms.jn = v || 0; });
+    const jnInp = mkNum('法向侧隙 jn mm（实测，分析始终使用）', ms.jn, 0.005,
+      v => { ms.jn = v || 0; });
     const cbLab = h('label', { class: 'cb' }, grid);
     const cb = h('input', { type: 'checkbox' }, cbLab);
     cb.checked = !!ms.jnLocked;
-    cbLab.appendChild(document.createTextNode('锁定实测间隙'));
-    cb.addEventListener('change', () => { ms.jnLocked = cb.checked; blMeshKey = ''; blSpecChanged(); blRender(); });
-    const gLab = h('label', {}, grid, '间隙等级');
+    cbLab.appendChild(document.createTextNode('锁定实测（仅限制搜索调整）'));
+    cb.addEventListener('change', () => { ms.jnLocked = cb.checked; blSpecChanged(); });
+    const gLab = h('label', {}, grid, '间隙等级（选择即填入 jn）');
     const gSel = h('select', {}, gLab);
     for (const g of BL_GRADES) {
       const o = h('option', { value: g.id }, gSel, g.name);
       if ((ms.grade || 'g2') === g.id) o.selected = true;
     }
-    gSel.disabled = !!ms.jnLocked;
-    gSel.addEventListener('change', () => { ms.grade = gSel.value; blSpecChanged(); });
+    gSel.addEventListener('change', () => {
+      ms.grade = gSel.value;
+      /* 等级只是快捷填入：分析始终使用 jn 字段本身 */
+      ms.jn = +(BL_GRADE_MAP[gSel.value].factor * (ga.module > 0 ? ga.module : 1)).toFixed(4);
+      jnInp.value = ms.jn;
+      blSpecChanged();
+    });
     mkNum('中心距公差 ±mm', ms.centerTol, 0.01, v => { ms.centerTol = Math.max(0, v || 0); });
     mkNum('偏心量 mm', ms.ecc, 0.005, v => { ms.ecc = Math.max(0, v || 0); });
     const fLab = h('label', {}, grid, '初始贴合齿面');
@@ -298,10 +323,30 @@ function blRenderSummary() {
   badge.textContent = '正常'; badge.className = 'badge';
 }
 
+/* 多路径（分支/闭环）时给出路径切换按钮，每条路径都有完整逐级明细 */
+function blRenderPathBtns() {
+  const wrap = $('#bl-paths');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  const paths = (blResult && blResult.paths) || [];
+  if (paths.length <= 1) { wrap.style.display = 'none'; return; }
+  wrap.style.display = '';
+  h('span', { class: 'muted small' }, wrap, '路径：');
+  paths.forEach((p, i) => {
+    const btn = h('button', {
+      class: 'bl-path-btn' + (i === blPathIdx ? ' active' : ''),
+      onclick: () => { blPathIdx = i; blRender(); },
+    }, wrap, `${i === blResult.primaryPath ? '主' : ''}路径${i + 1}` +
+      `（${p.meshCount}级，${p.lostMin}~${p.lostMax}°）`);
+    btn.title = p.meshes.map(mid => (blResult.meshNames || {})[mid] || mid).join('；');
+  });
+}
+
 function blRenderStageList() {
   const ol = $('#bl-stages');
   ol.innerHTML = '';
-  for (const [i, st] of ((blResult && blResult.stages) || []).entries()) {
+  const stages = blActiveStages();
+  for (const [i, st] of stages.entries()) {
     const li = h('li', {}, ol);
     li.textContent = `级${i + 1} ${st.driver}→${st.driven}：` +
       (st.factor === 0
@@ -310,10 +355,8 @@ function blRenderStageList() {
           `贡献空程 ${st.phiObs}°（观察轴，${st.phiObsMin}~${st.phiObsMax}）；` +
           `jn ${st.jnMin}~${st.jnMax} mm`);
   }
-  if (blResult && (blResult.paths || []).length > 1) {
-    const li = h('li', { class: 'muted' }, ol);
-    li.textContent = `闭环/分支：共 ${blResult.paths.length} 条路径参与相容区间，侧栏按主路径（级数最少）展开。`;
-  }
+  if (!stages.length && blResult)
+    h('li', { class: 'muted' }, ol, '该路径上没有可展开的啮合级。');
 }
 
 /* ---------------- SVG 换向动画 ---------------- */
@@ -321,8 +364,8 @@ function blDrawSVG() {
   const svg = $('#bl-svg');
   svg.innerHTML = '';
   blSvgRefs = null;
-  const stages = (blResult && blResult.stages) || [];
-  if (!blResult || !stages.length || !(blResult.totalSwitchDeg >= 0)) {
+  const stages = blActiveStages();
+  if (!blResult || !stages.length) {
     svg.style.display = 'none';
     return;
   }
@@ -339,7 +382,7 @@ function blDrawSVG() {
 
   /* 时间轴：0..maxA，橙色=越隙区，蓝色=观察轴随动区 */
   const tlY = 34;
-  const ts = blResult.totalSwitchDeg || 0;
+  const ts = blActiveSwitchDeg();
   svgEl('rect', { x: X(0), y: tlY - 3, width: Math.max(0, X(ts) - X(0)), height: 6,
     fill: 'rgba(224,142,69,.28)', rx: 2 }, svg);
   svgEl('rect', { x: X(ts), y: tlY - 3, width: Math.max(0, X(maxA) - X(ts)), height: 6,
@@ -400,8 +443,8 @@ function blDrawSVG() {
 function blUpdateMotion() {
   if (!blSvgRefs || !blResult) return;
   const theta = blAngle;
-  const stages = blResult.stages || [];
-  const ts = blResult.totalSwitchDeg || 0;
+  const stages = blActiveStages();
+  const ts = blActiveSwitchDeg();
   blSvgRefs.cursor.setAttribute('x1', blSvgRefs.X(theta));
   blSvgRefs.cursor.setAttribute('x2', blSvgRefs.X(theta));
   blSvgRefs.summary.textContent =
@@ -523,7 +566,8 @@ function blRenderSearchResults() {
       const g = BL_GRADE_MAP[o.grade];
       return `${names[mid] || mid} ${g ? g.name.split(' ')[0] : o.grade}` +
         `${o.dA ? ` Δa${o.dA > 0 ? '+' : ''}${o.dA}` : ''}` +
-        `${o.xSum ? ` xΣ${o.xSum > 0 ? '+' : ''}${o.xSum}` : ''}`;
+        `${o.xSum ? ` xΣ${o.xSum > 0 ? '+' : ''}${o.xSum}` : ''}` +
+        (o.jn != null ? ` → jn ${o.jn}` : '');
     }).join('；');
     const acts = h('div', { class: 'actions' }, li);
     h('button', { onclick: e => { e.stopPropagation(); blPreviewSol(i); } },
