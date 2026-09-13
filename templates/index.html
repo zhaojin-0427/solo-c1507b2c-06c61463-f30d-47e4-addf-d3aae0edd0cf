@@ -81,6 +81,7 @@
         <button class="tab" data-tab="props">属性</button>
         <button class="tab" data-tab="planet">行星轮系</button>
         <button class="tab" data-tab="search">配齿搜索</button>
+        <button class="tab" data-tab="backlash">回程间隙</button>
         <button class="tab" data-tab="library">方案库</button>
       </div>
 
@@ -217,6 +218,72 @@
         <ol id="ps-list"></ol>
       </div>
 
+      <div class="panel" id="panel-backlash">
+        <div class="field-row">
+          <div class="field">
+            <label>工况名称（一次换向一个工况）</label>
+            <input id="bl-name" placeholder="如：进给链换向">
+          </div>
+        </div>
+        <div class="field-row" style="align-items:flex-end">
+          <div class="field" style="flex:0"><button id="btn-bl-new" type="button">从项目快照建立草稿</button></div>
+          <div class="field" style="flex:0"><button id="btn-bl-refresh" type="button">按当前项目刷新快照</button></div>
+        </div>
+        <div id="bl-stale" class="bl-stale" style="display:none">⚠ 源轮系的齿轮或轴位已变化，工况快照可能过期。</div>
+        <div class="field-row">
+          <div class="field"><label>已存版本</label><select id="bl-versions"></select></div>
+          <div class="field" style="flex:0;display:flex;align-items:flex-end;gap:6px">
+            <button id="btn-bl-load" type="button">载入</button>
+            <button id="btn-bl-save" type="button" class="primary">另存版本</button>
+            <button id="btn-bl-del" type="button" class="danger">删</button>
+          </div>
+        </div>
+        <div id="bl-body" style="display:none">
+          <div class="field-row">
+            <div class="field"><label>输入轴</label><select id="bl-input"></select></div>
+            <div class="field"><label>观察轴</label><select id="bl-observe"></select></div>
+            <div class="field"><label>换向角 °</label><input id="bl-reversal" type="number" step="1" value="30"></div>
+          </div>
+          <h3>各啮合间隙参数</h3>
+          <div id="bl-meshes"></div>
+          <h3>空程结果 <span id="bl-badge" class="badge"></span></h3>
+          <div id="bl-summary" class="tt-summary muted">尚未计算</div>
+          <svg id="bl-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+          <div class="bl-anim-row">
+            <input id="bl-angle" type="range" min="0" max="30" step="0.1" value="0">
+            <button id="btn-bl-play" type="button">▶ 换向</button>
+          </div>
+          <div id="bl-angle-readout" class="muted small"></div>
+          <h3>各级接触面切换</h3>
+          <ol id="bl-stages" class="bl-stage-list"></ol>
+          <h3>间隙组合搜索</h3>
+          <p class="muted small">勾选「锁定实测」的啮合保持实测间隙不变；其余啮合在中心距调整量、变位系数和与间隙等级范围内搜索。</p>
+          <div class="field-row">
+            <div class="field"><label>中心距调整 ±mm</label><input id="bls-da" type="number" step="0.05" value="0.3"></div>
+            <div class="field"><label>中心距步数（每侧）</label><input id="bls-dasteps" type="number" step="1" min="1" max="6" value="3"></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label>变位和 xΣ 下限</label><input id="bls-xmin" type="number" step="0.05" value="-0.3"></div>
+            <div class="field"><label>xΣ 上限</label><input id="bls-xmax" type="number" step="0.05" value="0.5"></div>
+            <div class="field"><label>xΣ 步长</label><input id="bls-xstep" type="number" step="0.05" value="0.1"></div>
+          </div>
+          <div class="field">
+            <label>间隙等级（勾选参与搜索）</label>
+            <div id="bls-grades" class="bl-grades"></div>
+          </div>
+          <button id="btn-bl-search" type="button" class="primary">搜索组合</button>
+          <div id="bls-meta" class="muted small"></div>
+          <ol id="bls-list"></ol>
+          <h3>版本对照</h3>
+          <div class="field">
+            <label>对照基线版本（绿色条）</label>
+            <select id="bl-cmp-version"></select>
+          </div>
+          <svg id="bl-compare" xmlns="http://www.w3.org/2000/svg" style="display:none"></svg>
+        </div>
+        <p id="bl-empty" class="muted">还没有工况草稿：点「从项目快照建立草稿」，把当前轮系快照为一次换向工况；之后源轮系的齿轮或轴位变化会标记过期。</p>
+      </div>
+
       <div class="panel" id="panel-library">
         <div class="field-row">
           <input id="alt-name" placeholder="方案名称（可选）">
@@ -233,5 +300,6 @@
 </div>
 <script src="/static/involute.js"></script>
 <script src="/static/app.js"></script>
+<script src="/static/backlash.js"></script>
 </body>
 </html>

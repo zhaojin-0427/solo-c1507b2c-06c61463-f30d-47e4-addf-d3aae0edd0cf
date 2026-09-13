@@ -392,3 +392,46 @@ h3:first-child { margin-top: 4px; }
 .tt-ring-tools label.on { border-color: var(--accent); background: #eef3fd; }
 .tt-jump-row { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
 .tt-jump-row input { width: 64px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; }
+
+/* ---------- 回程间隙工况 ---------- */
+.bl-stale {
+  background: #fff6e5; border: 1px solid var(--hl); border-radius: 6px;
+  padding: 5px 9px; font-size: 12px; color: #7a4a00; margin: 6px 0;
+}
+.bl-mesh-card {
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 7px 9px; margin: 8px 0; background: #fff;
+}
+.bl-mesh-card.conflict { border-color: var(--err); background: #fdecea; }
+.bl-mesh-card.off-path { opacity: .55; }
+.bl-mesh-head { display: flex; justify-content: space-between; gap: 6px; font-weight: 600; }
+.bl-mesh-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; margin-top: 5px; }
+.bl-mesh-grid label { font-size: 11px; color: var(--muted); display: block; }
+.bl-mesh-grid input, .bl-mesh-grid select {
+  width: 100%; padding: 3px 6px; border: 1px solid var(--line);
+  border-radius: 5px; font: inherit; background: #fff;
+}
+.bl-mesh-grid label.cb { display: flex; align-items: center; gap: 5px; align-self: end; }
+.bl-mesh-grid label.cb input { width: auto; }
+.bl-mesh-contrib { font-size: 11px; color: var(--gear); margin-top: 4px; }
+
+.bl-anim-row { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
+.bl-anim-row input[type=range] { flex: 1; accent-color: var(--accent); }
+
+.bl-stage-list { margin: 6px 0; padding-left: 20px; font-size: 12px; }
+.bl-stage-list li { padding: 2px 4px; border-radius: 4px; }
+.bl-stage-list li.cur { background: #fff6e5; font-weight: 600; }
+.bl-stage-list li.done { color: var(--muted); }
+
+.bl-grades { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.bl-grades label { display: flex; align-items: center; gap: 4px; font-size: 12px; }
+
+#bl-svg, #bl-compare {
+  width: 100%; background: #f8f5ee;
+  border: 1px solid var(--line); border-radius: 8px; margin-top: 6px;
+}
+.bl-svg-label { font-size: 9px; font-weight: 700; fill: var(--ink); }
+.bl-svg-state { font-size: 8px; font-weight: 600; }
+.bl-tick-label { font-size: 7.5px; fill: var(--muted); text-anchor: middle; }
+
+#bls-list { list-style: none; margin: 8px 0 0; padding: 0; }

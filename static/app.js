@@ -1006,6 +1006,7 @@ function renderPanels() {
   renderProps();
   renderPlanetPanel();
   renderSearchPanel();
+  if (typeof blSchedule === 'function') blSchedule();   // 回程间隙：源轮系变化时刷新过期标记
 }
 
 function renderAnalysisPanel() {
@@ -2555,6 +2556,7 @@ function switchTab(name) {
   document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === `panel-${name}`));
   if (name === 'library') refreshLibrary();
   if (name === 'teeth' && selectedAsmCand < 0 && teethVer !== stateVersion) scheduleTeethFetch();
+  if (name === 'backlash' && typeof blTabShown === 'function') blTabShown();
 }
 document.querySelectorAll('.tab').forEach(t =>
   t.addEventListener('click', () => switchTab(t.dataset.tab)));

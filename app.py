@@ -10,6 +10,7 @@ from flask import Flask, g, jsonify, render_template, request
 import kinematics
 import meshing
 import contact
+import backlash
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "geartrain.db")
@@ -51,6 +52,16 @@ def init_db():
         ratio TEXT,
         error_pct REAL,
         state TEXT NOT NULL,
+        created_at REAL
+    );
+    CREATE TABLE IF NOT EXISTS backlash_cases (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        note TEXT,
+        spec TEXT NOT NULL,
+        snapshot TEXT NOT NULL,
+        solution TEXT,
         created_at REAL
     );
     """)
@@ -252,6 +263,84 @@ def api_clear_baseline():
     con = db()
     con.execute("UPDATE project SET baseline_id = NULL WHERE id = 1")
     con.commit()
+    return jsonify({"ok": True})
+
+
+# ----------------------------- 回程间隙工况 -----------------------------
+
+@app.post("/api/backlash/analyze")
+def api_backlash_analyze():
+    """回程间隙工况计算：各级间隙折算到观察轴、相容区间与换面角。"""
+    body = request.get_json(force=True)
+    try:
+        return jsonify(backlash.analyze_case(
+            body.get("state", {}), body.get("spec", {})))
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.post("/api/backlash/search")
+def api_backlash_search():
+    """间隙组合搜索：等级 × 中心距调整 × 变位和，按最坏空程/冲突数/改动量排序。"""
+    body = request.get_json(force=True)
+    try:
+        return jsonify(backlash.search(
+            body.get("state", {}), body.get("spec", {}), body))
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"results": [], "note": "搜索参数有误：%s" % exc}), 400
+
+
+@app.get("/api/backlash/cases")
+def api_backlash_cases():
+    rows = db().execute(
+        "SELECT id, name, version, note, created_at FROM backlash_cases "
+        "ORDER BY name, version DESC").fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.post("/api/backlash/cases")
+def api_backlash_case_save():
+    """另存工况版本：同名工况版本号递增，不改写原轮系方案。"""
+    body = request.get_json(force=True)
+    name = (body.get("name") or "").strip() or "换向工况"
+    spec = body.get("spec")
+    snapshot = body.get("snapshot")
+    if not isinstance(spec, dict) or not isinstance(snapshot, dict):
+        return jsonify({"error": "spec 与 snapshot 必须为对象"}), 400
+    con = db()
+    row = con.execute(
+        "SELECT COALESCE(MAX(version), 0) AS v FROM backlash_cases WHERE name = ?",
+        (name,)).fetchone()
+    version = row["v"] + 1
+    cur = con.execute(
+        """INSERT INTO backlash_cases (name, version, note, spec, snapshot, solution, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (name, version, body.get("note"),
+         json.dumps(spec, ensure_ascii=False),
+         json.dumps(snapshot, ensure_ascii=False),
+         json.dumps(body.get("solution"), ensure_ascii=False)
+         if body.get("solution") is not None else None,
+         time.time()))
+    con.commit()
+    return jsonify({"id": cur.lastrowid, "version": version, "ok": True})
+
+
+@app.get("/api/backlash/cases/<int:case_id>")
+def api_backlash_case_get(case_id):
+    row = db().execute("SELECT * FROM backlash_cases WHERE id = ?", (case_id,)).fetchone()
+    if not row:
+        return jsonify({"error": "不存在"}), 404
+    d = dict(row)
+    d["spec"] = json.loads(d["spec"])
+    d["snapshot"] = json.loads(d["snapshot"])
+    d["solution"] = json.loads(d["solution"]) if d["solution"] else None
+    return jsonify(d)
+
+
+@app.delete("/api/backlash/cases/<int:case_id>")
+def api_backlash_case_del(case_id):
+    db().execute("DELETE FROM backlash_cases WHERE id = ?", (case_id,))
+    db().commit()
     return jsonify({"ok": True})
 
 
