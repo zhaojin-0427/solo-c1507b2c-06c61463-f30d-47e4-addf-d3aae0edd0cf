@@ -11,6 +11,7 @@ import kinematics
 import meshing
 import contact
 import backlash
+import loadcase
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "geartrain.db")
@@ -55,6 +56,16 @@ def init_db():
         created_at REAL
     );
     CREATE TABLE IF NOT EXISTS backlash_cases (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        note TEXT,
+        spec TEXT NOT NULL,
+        snapshot TEXT NOT NULL,
+        solution TEXT,
+        created_at REAL
+    );
+    CREATE TABLE IF NOT EXISTS load_cases (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
         version INTEGER NOT NULL,
@@ -340,6 +351,87 @@ def api_backlash_case_get(case_id):
 @app.delete("/api/backlash/cases/<int:case_id>")
 def api_backlash_case_del(case_id):
     db().execute("DELETE FROM backlash_cases WHERE id = ?", (case_id,))
+    db().commit()
+    return jsonify({"ok": True})
+
+
+# ----------------------------- 载荷工况 -----------------------------
+
+@app.post("/api/loadcase/analyze")
+def api_loadcase_analyze():
+    """载荷工况：功率/转矩传播、啮合力合成、轴承反力与安全余量。"""
+    body = request.get_json(force=True)
+    try:
+        return jsonify(loadcase.analyze_case(
+            body.get("state", {}), body.get("spec", {})))
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "issues": [
+            {"severity": "error", "code": "BAD_REQUEST",
+             "message": "载荷计算参数有误：%s" % exc, "refs": {}}]}), 400
+
+
+@app.post("/api/loadcase/search")
+def api_loadcase_search():
+    """轴系布置搜索：轴长/最小间距/可调范围内枚举安装面与轴承位置。"""
+    body = request.get_json(force=True)
+    try:
+        return jsonify(loadcase.search_layouts(
+            body.get("state", {}), body.get("spec", {}), body))
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"results": [], "shafts": {},
+                        "note": "搜索参数有误：%s" % exc}), 400
+
+
+@app.get("/api/loadcase/cases")
+def api_loadcase_cases():
+    rows = db().execute(
+        "SELECT id, name, version, note, created_at FROM load_cases "
+        "ORDER BY name, version DESC").fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.post("/api/loadcase/cases")
+def api_loadcase_case_save():
+    """另存载荷工况版本：同名工况版本号递增，不改写原轮系方案。"""
+    body = request.get_json(force=True)
+    name = (body.get("name") or "").strip() or "受载工况"
+    spec = body.get("spec")
+    snapshot = body.get("snapshot")
+    if not isinstance(spec, dict) or not isinstance(snapshot, dict):
+        return jsonify({"error": "spec 与 snapshot 必须为对象"}), 400
+    con = db()
+    row = con.execute(
+        "SELECT COALESCE(MAX(version), 0) AS v FROM load_cases WHERE name = ?",
+        (name,)).fetchone()
+    version = row["v"] + 1
+    cur = con.execute(
+        """INSERT INTO load_cases (name, version, note, spec, snapshot, solution, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (name, version, body.get("note"),
+         json.dumps(spec, ensure_ascii=False),
+         json.dumps(snapshot, ensure_ascii=False),
+         json.dumps(body.get("solution"), ensure_ascii=False)
+         if body.get("solution") is not None else None,
+         time.time()))
+    con.commit()
+    return jsonify({"id": cur.lastrowid, "version": version, "ok": True})
+
+
+@app.get("/api/loadcase/cases/<int:case_id>")
+def api_loadcase_case_get(case_id):
+    row = db().execute("SELECT * FROM load_cases WHERE id = ?", (case_id,)).fetchone()
+    if not row:
+        return jsonify({"error": "不存在"}), 404
+    d = dict(row)
+    d["spec"] = json.loads(d["spec"])
+    d["snapshot"] = json.loads(d["snapshot"])
+    d["solution"] = json.loads(d["solution"]) if d["solution"] else None
+    return d
+
+
+@app.delete("/api/loadcase/cases/<int:case_id>")
+def api_loadcase_case_del(case_id):
+    db().execute("DELETE FROM load_cases WHERE id = ?", (case_id,))
     db().commit()
     return jsonify({"ok": True})
 

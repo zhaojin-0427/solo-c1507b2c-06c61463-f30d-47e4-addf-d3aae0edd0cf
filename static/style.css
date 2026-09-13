@@ -444,3 +444,56 @@ h3:first-child { margin-top: 4px; }
 .bl-tick-label { font-size: 7.5px; fill: var(--muted); text-anchor: middle; }
 
 #bls-list { list-style: none; margin: 8px 0 0; padding: 0; }
+
+/* ---------- 载荷工况 ---------- */
+.lc-mesh-res { font-size: 11px; color: var(--gear); margin-top: 4px;
+  grid-column: 1 / -1; }
+.lc-branch-card {
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 7px 9px; margin: 8px 0; background: #fff;
+}
+.lc-branch-card.conflict { border-color: var(--err); background: #fdecea; }
+.lc-ok { color: var(--ok); font-size: 12px; font-weight: 600; }
+.lc-err { color: var(--err); font-size: 12px; font-weight: 600; }
+
+.lc-issue-list { margin: 6px 0; padding-left: 4px; list-style: none; }
+.lc-issue-list li { padding: 3px 6px; border-radius: 5px; cursor: pointer; }
+.lc-issue-list li:hover { background: #f0ebe2; }
+.lc-issue-list li .sev { margin-right: 6px; font-weight: 600; }
+
+.lc-shaft-list { display: flex; flex-direction: column; gap: 10px; margin-top: 6px; }
+.lc-shaft-card {
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 10px; background: #fff;
+}
+.lc-shaft-card.conflict { border-color: var(--err); background: #fef7f6; }
+.lc-shaft-card.locate-flash, .lc-mesh-card.locate-flash,
+.lc-branch-card.locate-flash {
+  animation: lc-flash 1.5s ease-out;
+}
+@keyframes lc-flash {
+  0%, 30% { box-shadow: 0 0 0 3px rgba(224,142,69,.7); }
+  100% { box-shadow: none; }
+}
+.lc-shaft-head { display: flex; justify-content: space-between; gap: 8px; font-weight: 600; }
+.lc-shaft-stat { font-weight: 400; font-size: 11px; }
+.lc-shaft-grid {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: 4px 10px; margin: 6px 0 2px;
+}
+.lc-shaft-grid label { font-size: 11px; color: var(--muted); display: block; }
+.lc-shaft-grid input {
+  width: 100%; padding: 3px 6px; border: 1px solid var(--line);
+  border-radius: 5px; font: inherit; background: #fff;
+}
+.lc-svg-wrap { margin-top: 4px; overflow-x: auto; }
+.lc-svg { width: 100%; min-height: 100px; background: #f8f5ee;
+  border: 1px solid var(--line); border-radius: 8px; }
+.lc-tick { font-size: 7.5px; fill: var(--muted); }
+.lc-face-g { font-size: 8px; font-weight: 700; fill: var(--gear); }
+.lc-force-label { font-size: 7.5px; font-weight: 700; }
+.lc-lock { font-size: 8px; }
+.lc-shaft-actions { margin-top: 4px; }
+.lc-search-list { margin-top: 6px; }
+.lc-cand { padding: 6px 8px; margin: 5px 0; }
+.lc-cand .actions { margin-top: 4px; }

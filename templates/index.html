@@ -82,6 +82,7 @@
         <button class="tab" data-tab="planet">行星轮系</button>
         <button class="tab" data-tab="search">配齿搜索</button>
         <button class="tab" data-tab="backlash">回程间隙</button>
+        <button class="tab" data-tab="loadcase">载荷工况</button>
         <button class="tab" data-tab="library">方案库</button>
       </div>
 
@@ -286,6 +287,50 @@
         <p id="bl-empty" class="muted">还没有工况草稿：点「从项目快照建立草稿」，把当前轮系快照为一次换向工况；之后源轮系的齿轮或轴位变化会标记过期。</p>
       </div>
 
+      <div class="panel" id="panel-loadcase">
+        <div class="field-row">
+          <div class="field">
+            <label>工况名称（一次轮系受载一个工况）</label>
+            <input id="lc-name" placeholder="如：进给链额定载荷">
+          </div>
+        </div>
+        <div class="bl-btn-row">
+          <button id="btn-lc-new" type="button">从项目快照建立草稿</button>
+          <button id="btn-lc-refresh" type="button">按当前项目刷新快照</button>
+        </div>
+        <div id="lc-stale" class="bl-stale" style="display:none">⚠ 源轮系的齿轮或轴位已变化，工况已标记为过期；可刷新快照后重算。</div>
+        <div class="field">
+          <label>已存版本</label>
+          <select id="lc-versions"></select>
+        </div>
+        <div class="bl-btn-row">
+          <button id="btn-lc-load" type="button">载入</button>
+          <button id="btn-lc-save" type="button" class="primary">另存版本</button>
+          <button id="btn-lc-del" type="button" class="danger">删除版本</button>
+        </div>
+        <div id="lc-body" style="display:none">
+          <div class="field-row">
+            <div class="field"><label>输入轴</label><select id="lc-input"></select></div>
+            <div class="field"><label>输入转矩 N·m</label><input id="lc-torque" type="number" step="0.1" min="0"></div>
+            <div class="field"><label>输入转速 rpm</label><input id="lc-rpm" type="number" step="1" min="0"></div>
+            <div class="field"><label>持续时间 h</label><input id="lc-duration" type="number" step="10" min="0"></div>
+          </div>
+          <h3>载荷结果 <span id="lc-badge" class="badge"></span></h3>
+          <div id="lc-summary" class="tt-summary muted">尚未计算</div>
+          <h3>诊断定位</h3>
+          <ul id="lc-issues" class="lc-issue-list"></ul>
+          <h3>各啮合效率与载荷系数</h3>
+          <div id="lc-meshes"></div>
+          <div id="lc-branches"></div>
+          <h3>轴系侧视图（拖动齿轮安装面或轴承，力箭头与结果同步）</h3>
+          <div class="field-row">
+            <div class="field"><label>布置搜索栅格 mm</label><input id="lc-grid" type="number" step="0.5" value="2"></div>
+          </div>
+          <div id="lc-shafts" class="lc-shaft-list"></div>
+        </div>
+        <p id="lc-empty" class="muted">还没有载荷工况草稿：点「从项目快照建立草稿」，把当前轮系快照为一次受载工况（输入转矩/转速/持续时间、各啮合效率与载荷系数、分支比例、轴上安装面与轴承）；之后源轮系变化只将已存版本标记为过期。</p>
+      </div>
+
       <div class="panel" id="panel-library">
         <div class="field-row">
           <input id="alt-name" placeholder="方案名称（可选）">
@@ -303,5 +348,6 @@
 <script src="/static/involute.js"></script>
 <script src="/static/app.js"></script>
 <script src="/static/backlash.js"></script>
+<script src="/static/loadcase.js"></script>
 </body>
 </html>
