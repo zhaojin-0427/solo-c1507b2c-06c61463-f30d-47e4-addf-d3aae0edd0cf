@@ -10,10 +10,16 @@
   marks        {齿序号: "wear"|"chip"|"repair"} 磨损/崩角/修补标记
 
 啮合事件模型（顺着传动方向）：
-  以输入轴为根沿普通齿轮啮合图 BFS，深度小的一侧齿轮为主动；每个啮合事件 k=0,1,…
-  主动轮在节点处进入啮合的齿为 (i0A + k) mod zA；外啮合从动轮反向转动，
-  其齿为 (i0B − k) mod zB，内啮合同向为 (i0B + k) mod zB。
-  事件间隔 = 主动轮一个齿距，输入轴转角 = 360°·k / nA（nA 为主动轴相对输入转速）。
+  以输入轴为根沿普通齿轮啮合图 BFS，深度小的一侧齿轮为主动；节点（两节圆切点）
+  在固定系中不动。主动轴正向（逆时针）转过一个齿距时，原来落后一个齿距的齿进入
+  节点，故事件 k=0,1,… 时
+    主动齿 = (i0A − k) mod zA
+    从动齿 = 外啮合 (i0B + k) mod zB（从动轴反转）
+            内啮合 (i0B − k) mod zB（从动轴同向）
+  若主动轴相对输入反转，整体乘 s = sign(nA)。
+  节点方向：外啮合节点在两心连线上，主动看从动为 φ、从动看主动为 φ+180；
+  内啮合两节圆内切，从任一轮中心看节点都在 φ+180 方向。
+  事件间隔 = 主动轮一个齿距，输入轴转角 = 360°·k / (zA·|nA|)。
   因而外啮合长期只在 iA+iB ≡ c (mod gcd(zA,zB)) 的齿对子集上循环，
   内啮合为 iB−iA ≡ c，可到达齿对数 = zA·zB/gcd。
 """
@@ -101,9 +107,9 @@ def _i0(phi_deg: float, zero_deg, offset: int, z: int) -> int:
     return int(math.floor(x + 0.5)) % z
 
 
-def _pair_index(k: int, i0a: int, i0b: int, za: int, zb: int, internal: bool):
-    ia = (i0a + k) % za
-    ib = (i0b + k if internal else i0b - k) % zb
+def _pair_index(k, i0a, i0b, za, zb, internal, s=1):
+    ia = (i0a - s * k) % za
+    ib = (i0b - s * k) % zb if internal else (i0b + s * k) % zb
     return ia, ib
 
 
@@ -183,29 +189,39 @@ def _build_contexts(state: dict, an: dict):
             issues.append({"mesh": e.get("id"),
                            "message": "啮合不在输入轴动力链内或主动轴静止，未参与齿对展开"})
             continue
-        # 深度小者为主动；同级（闭合边）按啮合表顺序取 gearA 侧
+        # 深度小者为主动；同级（闭合边）按啮合表顺序取 gearA 侧。
+        # 注意：主动/从动按传动方向判定，与啮合边的 gearA/gearB 存储顺序无关。
         da, db = depth.get(sa, 1 << 30), depth.get(sb, 1 << 30)
         if da < db or (da == db and da < (1 << 30)):
-            drv, dnv, sd, sn, n_shaft = ga, gb, sa, sb, abs(na)
+            drv, dnv, sd, sn, n_shaft_signed = ga, gb, sa, sb, na
         elif db < da:
-            drv, dnv, sd, sn, n_shaft = gb, ga, sb, sa, abs(nb)
+            drv, dnv, sd, sn, n_shaft_signed = gb, ga, sb, sa, nb
         else:
-            drv, dnv, sd, sn, n_shaft = ga, gb, sa, sb, abs(na)
-        # 内啮合时从动转速符号与主动相同；外啮合相反。
-        # 事件速率 = 主动轮每输入转走过的齿距数 = z_drv·|n_shaft|
+            drv, dnv, sd, sn, n_shaft_signed = ga, gb, sa, sb, na
+        n_shaft = abs(n_shaft_signed)
+        s_sign = 1 if n_shaft_signed > 0 else -1
         Pd, Pn = shafts[sd], shafts[sn]
         phi = math.degrees(math.atan2(Pn["y"] - Pd["y"], Pn["x"] - Pd["x"]))
         za, zb = drv["z"], dnv["z"]
         offa = _gear_int_offset(drv.get("offset"))
         offb = _gear_int_offset(dnv.get("offset"))
-        i0a = _i0(phi, drv.get("zeroDeg", 0), offa, za)
-        i0b = _i0(phi + 180.0, dnv.get("zeroDeg", 0), offb, zb)
+        # 节点方向（两轮中心指向切点的固定方向角）：
+        # 外啮合切点在两心连线上：主动侧 phi、从动侧 phi+180；
+        # 内啮合两节圆内切，从两轮中心看切点同向——齿圈驱动时为 phi，
+        # 小齿轮驱动时为 phi+180。
+        if internal:
+            node_a = node_b = phi + (0.0 if drv.get("internal") else 180.0)
+        else:
+            node_a, node_b = phi, phi + 180.0
+        i0a = _i0(node_a, drv.get("zeroDeg", 0), offa, za)
+        i0b = _i0(node_b, dnv.get("zeroDeg", 0), offb, zb)
         contexts.append({
             "mesh": e, "ga": ga, "gb": gb, "drv": drv, "dnv": dnv,
             "internal": internal, "depth": min(depth.get(sd, order), depth.get(sn, order)),
             "order": order,
-            "phi": phi, "za": za, "zb": zb,
-            "shaftRate": n_shaft,
+            "phi": phi, "nodeA": node_a, "nodeB": node_b,
+            "za": za, "zb": zb,
+            "shaftRate": n_shaft, "shaftSign": s_sign,
             "rate": za * n_shaft,
             "i0a": i0a, "i0b": i0b, "offa": offa, "offb": offb,
         })
@@ -246,6 +262,7 @@ def analyze_teeth(state: dict, observe_turns: float | None = None) -> dict:
         total_pairs_all += total_pairs
         total_reach_all += reach
         rate = c["rate"]
+        s_sign = c["shaftSign"]
         period_turns = Fraction(P) / rate
         N = int(T * rate)                  # 观察窗口内事件数 k=0..N-1
         cap_hit = False
@@ -267,7 +284,8 @@ def analyze_teeth(state: dict, observe_turns: float | None = None) -> dict:
             base, rem = divmod(N, P)
             seen_pairs = 0
             for k in range(P):
-                ia, ib = _pair_index(k, c["i0a"], c["i0b"], za, zb, c["internal"])
+                ia, ib = _pair_index(k, c["i0a"], c["i0b"], za, zb,
+                                     c["internal"], s_sign)
                 seen_pairs += 1
                 if k < N:
                     cnt = base + (1 if k < rem else 0)
@@ -280,18 +298,25 @@ def analyze_teeth(state: dict, observe_turns: float | None = None) -> dict:
                         and len(marked_meetings) < MARK_LIST_CAP:
                     marked_meetings.append(_meeting(c, ia, ib, k, N, P, marks_a, marks_b))
 
+        drv, dnv = c["drv"], c["dnv"]
+        def _gname(gg, zz):
+            return gg.get("name") or (
+                "内齿圈 z%s" % zz if gg.get("internal") else "齿轮 z%s" % zz)
         out_meshes.append({
             "meshId": c["mesh"].get("id"),
-            "gearA": c["ga"]["id"], "gearB": c["gb"]["id"],
-            "nameA": c["ga"].get("name") or ("内齿圈 z%s" % za if c["ga"].get("internal") else "齿轮 z%s" % c["ga"].get("z")),
-            "nameB": c["gb"].get("name") or ("内齿圈 z%s" % zb if c["gb"].get("internal") else "齿轮 z%s" % c["gb"].get("z")),
-            "driverGear": c["drv"]["id"], "drivenGear": c["dnv"]["id"],
+            # 一律按传动方向：A=主动、B=从动（与啮合边存储顺序无关）
+            "gearA": drv["id"], "gearB": dnv["id"],
+            "storedGearA": c["ga"]["id"], "storedGearB": c["gb"]["id"],
+            "nameA": _gname(drv, za), "nameB": _gname(dnv, zb),
+            "driverGear": drv["id"], "drivenGear": dnv["id"],
             "internal": c["internal"], "depth": c["depth"],
             "zA": za, "zB": zb,
             "rate": _fj(rate), "shaftRate": _fj(c["shaftRate"]),
+            "shaftSign": s_sign,
             "phiDeg": round(c["phi"], 6),
-            "zeroA": _gear_int(c["drv"], "zeroDeg", 0) or 0,
-            "zeroB": _gear_int(c["dnv"], "zeroDeg", 0) or 0,
+            "nodeA": round(c["nodeA"], 6), "nodeB": round(c["nodeB"], 6),
+            "zeroA": _gear_int(drv, "zeroDeg", 0) or 0,
+            "zeroB": _gear_int(dnv, "zeroDeg", 0) or 0,
             "offA": c["offa"], "offB": c["offb"],
             "i0A": c["i0a"], "i0B": c["i0b"],
             "events": N,
@@ -339,7 +364,11 @@ def _meeting(c, ia, ib, k0, N, P, marks_a, marks_b):
 # ----------------------------- 装配相位枚举 -----------------------------
 
 def _mesh_score(c, za, zb, i0a, i0b, watch_a, watch_b, N):
-    """给定初始齿号后，统计观察窗内关注齿相遇次数与最早相遇输入转数（None=不相遇）。"""
+    """给定初始齿号后，统计观察窗内关注齿相遇次数与最早相遇输入转数（None=不相遇）。
+
+    事件 k：ia = i0a − k (mod za)；外啮合 ib = i0b + k (mod zb)，
+    内啮合 ib = i0b − k (mod zb)。s=±1 不改变 gcd 同余类，故无需单列。
+    """
     if not watch_a or not watch_b or N <= 0:
         return 0, None
     g = gcd(za, zb)
@@ -349,9 +378,11 @@ def _mesh_score(c, za, zb, i0a, i0b, watch_a, watch_b, N):
     rate = c["rate"]
     internal = c["internal"]
     for ia in watch_a:
-        r1 = (ia - i0a) % za
+        # k ≡ i0a − ia (mod za)
+        r1 = (i0a - ia) % za
         for ib in watch_b:
-            r2 = ((ib - i0b) if internal else (i0b - ib)) % zb
+            # 外啮合 k ≡ ib − i0b (mod zb)；内啮合 k ≡ i0b − ib (mod zb)
+            r2 = ((ib - i0b) if not internal else (i0b - ib)) % zb
             k0 = _crt2(r1, za, r2, zb)
             if k0 is None or k0 >= N:
                 continue
@@ -405,18 +436,11 @@ def enumerate_assembly(state: dict, offset_range: int = 3,
 
     watch = {g["id"]: _watched(g) for g in used}
 
-    # 预先把啮合按变量归属登记；每赋完一只齿轮就结算其“两侧都已定”的啮合
-    mesh_of_var: dict = {g["id"]: [] for g in variables}
-    for c in contexts:
-        for gid in (c["drv"]["id"], c["dnv"]["id"]):
-            if gid in mesh_of_var:
-                mesh_of_var[gid].append(c)
-
     def i0_with(c, role, offsets):
         g = c[role]
         gid = g["id"]
         off = offsets.get(gid, _gear_int_offset(g.get("offset")))
-        phi = c["phi"] if role == "drv" else c["phi"] + 180.0
+        phi = c["nodeA"] if role == "drv" else c["nodeB"]
         return _i0(phi, g.get("zeroDeg", 0), off, g["z"])
 
     N_by_mesh = {id(c): int(T * c["rate"]) for c in contexts}
@@ -429,7 +453,6 @@ def enumerate_assembly(state: dict, offset_range: int = 3,
 
     # 当前装配先入列，作为排序基线
     current_offsets = {g["id"]: _gear_int_offset(g.get("offset")) for g in used}
-    best_count = 10 ** 18
 
     def evaluate(offsets):
         """返回 (关注齿窗内相遇总次数, 全局最早相遇输入转数 Fraction 或 None)。"""
@@ -448,7 +471,6 @@ def enumerate_assembly(state: dict, offset_range: int = 3,
         return total_count, earliest_global
 
     def record(offsets):
-        nonlocal best_count
         cnt, turns0 = evaluate(offsets)
         change = sum(abs(offsets[g["id"]] - _gear_int_offset(g.get("offset")))
                      for g in variables)
@@ -456,8 +478,6 @@ def enumerate_assembly(state: dict, offset_range: int = 3,
         if key in result_keys:
             return
         result_keys.add(key)
-        if cnt < best_count:
-            best_count = cnt
         results.append({
             # 仅回传相对当前装配的整齿增量，供前端叠加
             "deltas": {g["id"]: offsets[g["id"]] - _gear_int_offset(g.get("offset"))
@@ -477,10 +497,9 @@ def enumerate_assembly(state: dict, offset_range: int = 3,
 
     order = list(variables)
     assigned = dict(locked)
-    settled_meshes = set()
 
-    def dfs(idx, partial_count):
-        nonlocal truncated, best_count
+    def dfs(idx):
+        nonlocal truncated
         if nodes[0] > node_cap or time.time() > deadline:
             truncated = True
             return
@@ -491,28 +510,14 @@ def enumerate_assembly(state: dict, offset_range: int = 3,
         for off in domains[g["id"]]:
             nodes[0] += 1
             assigned[g["id"]] = off
-            add_cnt = 0
-            newly = []
-            for c in mesh_of_var[g["id"]]:
-                if c["drv"]["id"] in assigned and c["dnv"]["id"] in assigned and id(c) not in settled_meshes:
-                    newly.append(c)
-                    settled_meshes.add(id(c))
-                    i0a = i0_with(c, "drv", assigned)
-                    i0b = i0_with(c, "dnv", assigned)
-                    cnt, _ = _mesh_score(c, c["za"], c["zb"], i0a, i0b,
-                                         watch.get(c["drv"]["id"], []),
-                                         watch.get(c["dnv"]["id"], []),
-                                         N_by_mesh[id(c)])
-                    add_cnt += cnt
-            if partial_count + add_cnt <= best_count or len(results) <= 1:
-                dfs(idx + 1, partial_count + add_cnt)
-            for c in newly:
-                settled_meshes.discard(id(c))
+            # 关注齿相遇数要在全部啮合确定后才能汇总（同一根轴上的齿轮会
+            # 同时影响多处啮合），不能做部分和剪枝；节点/时间预算足以兜底。
+            dfs(idx + 1)
             if truncated:
                 break
         assigned.pop(g["id"], None)
 
-    dfs(0, 0)
+    dfs(0)
 
     INF_SORT = 10 ** 12
     results.sort(key=lambda r: (
