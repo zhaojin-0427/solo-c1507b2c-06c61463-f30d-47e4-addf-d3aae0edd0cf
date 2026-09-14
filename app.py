@@ -13,6 +13,7 @@ import contact
 import backlash
 import loadcase
 import thermal
+import torsional
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "geartrain.db")
@@ -87,6 +88,24 @@ def init_db():
         created_at REAL
     );
     CREATE TABLE IF NOT EXISTS thermal_drafts (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        name TEXT,
+        data TEXT NOT NULL,
+        updated_at REAL
+    );
+    CREATE TABLE IF NOT EXISTS torsional_cases (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        note TEXT,
+        spec TEXT NOT NULL,
+        frozen TEXT NOT NULL,
+        solution TEXT,
+        train_fp TEXT,
+        load_fp TEXT,
+        created_at REAL
+    );
+    CREATE TABLE IF NOT EXISTS torsional_drafts (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         name TEXT,
         data TEXT NOT NULL,
@@ -585,6 +604,160 @@ def api_thermal_case_get(case_id):
 @app.delete("/api/thermal/cases/<int:case_id>")
 def api_thermal_case_del(case_id):
     db().execute("DELETE FROM thermal_cases WHERE id = ?", (case_id,))
+    db().commit()
+    return jsonify({"ok": True})
+
+
+# ----------------------------- 扭转振动工况 -----------------------------
+
+@app.post("/api/torsional/freeze")
+def api_torsional_freeze():
+    """从载荷版本（或内联当前载荷草稿）冻结动力路径、转速比与平均转矩。
+    body: {"sources": [{"key","name","state","spec","caseId","version","inline"}]}"""
+    body = request.get_json(force=True)
+    sources = body.get("sources", [])
+    if not isinstance(sources, list) or not sources:
+        return jsonify({"error": "sources 必须为非空数组"}), 400
+    clean = []
+    for src in sources:
+        if not isinstance(src, dict) or not isinstance(src.get("state"), dict):
+            continue
+        clean.append({"key": str(src.get("key")), "name": src.get("name"),
+                      "state": src["state"], "spec": src.get("spec", {}),
+                      "caseId": src.get("caseId"), "version": src.get("version"),
+                      "inline": bool(src.get("inline"))})
+    if not clean:
+        return jsonify({"error": "没有有效来源"}), 400
+    return jsonify(torsional.freeze_sources(clean))
+
+
+@app.post("/api/torsional/default-spec")
+def api_torsional_default_spec():
+    """按冻结结果生成默认 spec（齿坯惯量、啮合刚度、驱动/负载联轴器、扫描与激励）。"""
+    body = request.get_json(force=True)
+    frozen = body.get("frozen")
+    if not isinstance(frozen, dict):
+        return jsonify({"error": "frozen 必须为对象"}), 400
+    return jsonify(torsional.default_spec(frozen))
+
+
+@app.post("/api/torsional/analyze")
+def api_torsional_analyze():
+    """转速扫描：固有模态、Campbell 穿越、啮合动态转矩、放大系数与超限/欠阻尼区间。"""
+    body = request.get_json(force=True)
+    try:
+        return jsonify(torsional.analyze_case(
+            body.get("spec", {}), body.get("frozen")))
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "issues": [
+            {"severity": "error", "code": "BAD_REQUEST",
+             "message": "扭振参数有误：%s" % exc, "refs": {}}]}), 400
+
+
+@app.post("/api/torsional/search")
+def api_torsional_search():
+    """飞轮惯量 × 未锁定联轴器刚度/阻尼倍率搜索，
+    按 危险共振区数 → 最大动态转矩 → 附加惯量 → 改动量 排序。"""
+    body = request.get_json(force=True)
+    try:
+        return jsonify(torsional.search(
+            body.get("spec", {}), body.get("frozen"), body))
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"results": [], "note": "搜索参数有误：%s" % exc}), 400
+
+
+@app.get("/api/torsional/draft")
+def api_torsional_draft_get():
+    """读取服务端保存的扭振草稿（换浏览器/清站点数据后可恢复）。"""
+    row = db().execute(
+        "SELECT name, data, updated_at FROM torsional_drafts WHERE id = 1").fetchone()
+    if not row:
+        return jsonify({"draft": None})
+    try:
+        return jsonify({"draft": json.loads(row["data"]), "name": row["name"],
+                        "updatedAt": row["updated_at"]})
+    except (ValueError, TypeError):
+        return jsonify({"draft": None})
+
+
+@app.put("/api/torsional/draft")
+def api_torsional_draft_put():
+    """保存扭振草稿（name/spec/frozen），与版本分开。"""
+    body = request.get_json(force=True)
+    draft = body.get("draft")
+    if not isinstance(draft, dict) or not isinstance(draft.get("spec"), dict) \
+            or not isinstance(draft.get("frozen"), dict):
+        return jsonify({"error": "draft.spec / draft.frozen 必须为对象"}), 400
+    con = db()
+    con.execute(
+        """INSERT INTO torsional_drafts (id, name, data, updated_at)
+           VALUES (1, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             name=excluded.name, data=excluded.data,
+             updated_at=excluded.updated_at""",
+        ((draft.get("name") or ""), json.dumps(draft, ensure_ascii=False),
+         time.time()))
+    con.commit()
+    return jsonify({"ok": True})
+
+
+@app.get("/api/torsional/cases")
+def api_torsional_cases():
+    """版本列表；过期状态由前端按当前来源指纹比对。"""
+    rows = db().execute(
+        "SELECT id, name, version, note, train_fp, load_fp, created_at "
+        "FROM torsional_cases ORDER BY name, version DESC").fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.post("/api/torsional/cases")
+def api_torsional_case_save():
+    """另存扭振版本：同名版本号递增；冻结输入、计算结果（solution）与曲线一并保存，
+    源轮系/载荷之后变化只标记过期。"""
+    body = request.get_json(force=True)
+    name = (body.get("name") or "").strip() or "扭振工况"
+    spec, frozen = body.get("spec"), body.get("frozen")
+    if not isinstance(spec, dict) or not isinstance(frozen, dict):
+        return jsonify({"error": "spec 与 frozen 必须为对象"}), 400
+    pkey = spec.get("primarySource")
+    src = (frozen.get("sources") or {}).get(pkey) or {}
+    train_fp = src.get("trainFp")
+    load_fp = src.get("loadSpecFp")
+    con = db()
+    row = con.execute(
+        "SELECT COALESCE(MAX(version), 0) AS v FROM torsional_cases WHERE name = ?",
+        (name,)).fetchone()
+    version = row["v"] + 1
+    cur = con.execute(
+        """INSERT INTO torsional_cases
+           (name, version, note, spec, frozen, solution, train_fp, load_fp, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (name, version, body.get("note"),
+         json.dumps(spec, ensure_ascii=False),
+         json.dumps(frozen, ensure_ascii=False),
+         json.dumps(body.get("solution"), ensure_ascii=False)
+         if body.get("solution") is not None else None,
+         train_fp, load_fp, time.time()))
+    con.commit()
+    return jsonify({"id": cur.lastrowid, "version": version, "ok": True})
+
+
+@app.get("/api/torsional/cases/<int:case_id>")
+def api_torsional_case_get(case_id):
+    row = db().execute(
+        "SELECT * FROM torsional_cases WHERE id = ?", (case_id,)).fetchone()
+    if not row:
+        return jsonify({"error": "不存在"}), 404
+    d = dict(row)
+    d["spec"] = json.loads(d["spec"])
+    d["frozen"] = json.loads(d["frozen"])
+    d["solution"] = json.loads(d["solution"]) if d["solution"] else None
+    return d
+
+
+@app.delete("/api/torsional/cases/<int:case_id>")
+def api_torsional_case_del(case_id):
+    db().execute("DELETE FROM torsional_cases WHERE id = ?", (case_id,))
     db().commit()
     return jsonify({"ok": True})
 

@@ -561,3 +561,66 @@ h3:first-child { margin-top: 4px; }
 .th-point-row input { width: 64px; }
 .th-point-sep { color: var(--muted); }
 .th-point-del { padding: 1px 7px; }
+
+/* ---------- 扭转振动工况 ---------- */
+.tv-source-box .th-source-card { margin: 2px 0; }
+.tv-orders { display: flex; flex-direction: column; gap: 6px; margin: 6px 0; }
+.tv-order-row {
+  display: flex; align-items: flex-end; gap: 8px;
+  border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; background: var(--panel);
+}
+.tv-order-row label { font-size: 11px; color: var(--muted); }
+.tv-order-row input { width: 80px; padding: 3px 6px; border: 1px solid var(--line);
+  border-radius: 5px; font: inherit; }
+.tv-shaft-list { display: flex; flex-direction: column; gap: 7px; margin-top: 6px; }
+.tv-shaft-card {
+  border: 1px solid var(--line); border-radius: 7px; padding: 6px 9px;
+  background: var(--panel);
+}
+.tv-shaft-card.locked { border-color: var(--warn); background: #fffaf2; }
+.tv-shaft-card .bl-mesh-head { display: flex; justify-content: space-between; gap: 8px; }
+.tv-spring-list { display: flex; flex-direction: column; gap: 7px; margin-top: 6px; }
+.tv-spring-card {
+  border: 1px solid var(--line); border-radius: 7px; padding: 6px 9px; background: var(--panel);
+}
+.tv-spring-card.coupling { background: #faf5ee; }
+.tv-spring-card.locked { border-color: var(--warn); background: #fffaf2; }
+.tv-spring-card .bl-mesh-head { display: flex; justify-content: space-between; gap: 8px; }
+.tv-spring-card button { margin-top: 5px; }
+.tv-campbell {
+  width: 100%; height: 250px; background: #f8f5ee; border-radius: 6px;
+  border: 1px solid var(--line); touch-action: none;
+}
+.tv-fn-label { font-size: 8.5px; fill: var(--muted); pointer-events: none; }
+.tv-order-label { font-size: 9px; fill: #b06a00; font-weight: 600; pointer-events: none; }
+.tv-cursor-readout { font-size: 12px; color: var(--ink); margin: 4px 2px; font-weight: 600; }
+.tv-cursor-readout.danger { color: var(--err); }
+.tv-mode-list { margin: 6px 0; padding-left: 4px; list-style: none; }
+.tv-mode-item {
+  display: flex; justify-content: space-between; gap: 8px;
+  border: 1px solid var(--line); border-radius: 6px; padding: 5px 9px; margin-bottom: 5px;
+  cursor: pointer; background: var(--panel);
+}
+.tv-mode-item.selected { border-color: var(--accent); background: #f0f5ff; }
+.tv-mode-item.under { border-color: var(--err); }
+.tv-mode-item.under.selected { background: #fdecea; }
+.tv-mode-name { font-weight: 600; }
+.tv-mode-svg {
+  width: 100%; height: 180px; background: #f8f5ee; border-radius: 6px;
+  border: 1px solid var(--line);
+}
+.tv-mode-val { font-size: 8.5px; fill: var(--gear); font-weight: 600; pointer-events: none; }
+.tv-shaft-svg {
+  width: 100%; height: 200px; background: #f8f5ee; border-radius: 6px;
+  border: 1px solid var(--line);
+}
+.tv-edge-label { font-size: 9px; fill: var(--gear); font-weight: 600; pointer-events: none; }
+.tv-edge-label.over { fill: var(--err); }
+.tv-node-label { font-size: 9px; fill: var(--muted); pointer-events: none; }
+.tv-node-amp { font-size: 8px; fill: var(--ink); font-weight: 600; pointer-events: none; }
+.tv-cursor-detail { font-size: 11.5px; margin: 5px 2px; }
+.tv-fw-checks { display: flex; flex-wrap: wrap; gap: 5px 12px; }
+.tv-fw-checks label { font-size: 12px; display: inline-flex; align-items: center; gap: 4px; }
+.tv-fw-checks input { width: auto; }
+.tv-fw-locked { color: var(--warn); }
+.tv-search-list { list-style: none; margin: 8px 0 0; padding: 0; }

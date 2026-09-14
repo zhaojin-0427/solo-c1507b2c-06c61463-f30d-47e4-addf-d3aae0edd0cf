@@ -493,7 +493,7 @@ def build_model(spec: dict, src: dict):
     M = [[0.0] * n for _ in range(n)]
     for nd in nodes:
         rr = nd["r"] if nd["r"] else 1.0
-        M[idx[nd["id"]]][idx[nd["id"]]] = max(1e-14, nd["inertia"] / (rr * rr))
+        M[idx[nd["id"]]][idx[nd["id"]]] = max(1e-14, nd["inertia"] * rr * rr)
 
     K = [[0.0] * n for _ in range(n)]
     C = [[0.0] * n for _ in range(n)]
@@ -502,15 +502,19 @@ def build_model(spec: dict, src: dict):
     def add_spring(eid, kind, name, id_a, shaft_a, id_b, shaft_b, sigma,
                    k_phys, c_phys, extra=None):
         ia, ib = idx[id_a], idx[id_b]
-        ra = ratios.get(shaft_a, 0.0) or 0.0
-        ra = ra if ra else 1.0
-        kg = k_phys / (ra * ra)
-        cg = c_phys / (ra * ra)
-        for mat, g in ((K, kg), (C, cg)):
-            mat[ia][ia] += g
-            mat[ib][ib] += g
-            mat[ia][ib] -= sigma * g
-            mat[ib][ia] -= sigma * g
+        # 广义坐标取 q̃=r·θ（物理角 θ=q̃/r，r 带转向符号）：
+        # 物理变形 Δ=q̃a/ra − σ q̃b/rb，两端对角项分别为 k/ra²、k/rb²，
+        # 交叉项为 −σ·k/(ra·rb)（不可假定两端转速比相同）。
+        ra = ratios.get(shaft_a, 0.0) or 1.0
+        rb = ratios.get(shaft_b, 0.0) or 1.0
+        K[ia][ia] += k_phys / (ra * ra)
+        K[ib][ib] += k_phys / (rb * rb)
+        K[ia][ib] -= sigma * k_phys / (ra * rb)
+        K[ib][ia] -= sigma * k_phys / (ra * rb)
+        C[ia][ia] += c_phys / (ra * ra)
+        C[ib][ib] += c_phys / (rb * rb)
+        C[ia][ib] -= sigma * c_phys / (ra * rb)
+        C[ib][ia] -= sigma * c_phys / (ra * rb)
         edge = {"id": eid, "kind": kind, "name": name,
                 "a": ia, "b": ib, "sigma": sigma,
                 "ra": ratios.get(shaft_a, 1.0), "rb": ratios.get(shaft_b, 1.0),
@@ -599,13 +603,37 @@ def analyze_case(spec: dict, frozen: dict | None = None) -> dict:
             % (m["index"], m["hz"], m["zeta"], zeta_min),
             mode=m["index"])
 
-    # —— 转速扫描样本 ——
+    # —— 转速扫描样本（粗扫步长 + 各阶共振转速附近加密，避免漏掉窄共振峰）——
     lo, hi, step = s["scan"]["rpmMin"], s["scan"]["rpmMax"], s["scan"]["rpmStep"]
-    n_samp = int(math.floor((hi - lo) / step + 1e-9)) + 1
-    if n_samp > MAX_SAMPLES:
-        step = (hi - lo) / (MAX_SAMPLES - 1)
-        n_samp = MAX_SAMPLES
-    rpms = [lo + k * step for k in range(n_samp)]
+    ex_node0 = s["excitation"]["nodeId"]
+    ex_r0 = abs(nodes[idx[ex_node0]]["r"]) if ex_node0 in idx else 1.0
+    sample_set = []
+    x = lo
+    while x <= hi + 1e-9:
+        sample_set.append(round(x, 4))
+        x += step
+    if not sample_set or sample_set[-1] < hi - 1e-9:
+        sample_set.append(round(hi, 4))
+    refine_hs = [od["h"] for od in s["excitation"]["orders"]] or [1.0]
+    for mm in modes:
+        if mm["rigid"]:
+            continue
+        nc_base = 60.0 * mm["hz"] / ex_r0
+        beta = max(3.0 * max(mm["zeta"], 1e-4), 0.02)
+        for h in refine_hs:
+            nc = nc_base / h
+            for f in (-2.0, -1.5, -1.0, -0.67, -0.4, -0.2, -0.1, 0.0,
+                      0.1, 0.2, 0.4, 0.67, 1.0, 1.5, 2.0):
+                v = nc * (1.0 + f * beta)
+                if lo - 1e-9 <= v <= hi + 1e-9:
+                    sample_set.append(round(v, 3))
+    rpms = sorted(set(sample_set))
+    if len(rpms) > MAX_SAMPLES:
+        # 保留两端后等距抽取（共振加密点多在中部，抽取后仍远密于粗扫）
+        keep = [rpms[0]] + [rpms[int(k * (len(rpms) - 1) / (MAX_SAMPLES - 1))]
+                            for k in range(1, MAX_SAMPLES - 1)] + [rpms[-1]]
+        rpms = sorted(set(keep))
+    n_samp = len(rpms)
 
     ex_node = s["excitation"]["nodeId"]
     ex_i = idx.get(ex_node)
@@ -626,8 +654,8 @@ def analyze_case(spec: dict, frozen: dict | None = None) -> dict:
                   for j in range(n)] for i in range(n)]
             Q = [0j] * n
             if ex_i is not None and amp > 0:
-                # 物理谐和转矩 T 的广义力 Q=T·r（虚功：T·δθ=T·r·δq）
-                Q[ex_i] = complex(amp * max(ex_r, 1e-12), 0.0)
+                # 物理谐和转矩 T 的广义力 Q=T/r（虚功：T·δθ=T·δq̃/r）
+                Q[ex_i] = complex(amp / max(ex_r, 1e-12), 0.0)
             try:
                 theta = _solve_complex(A, Q)
             except ValueError:
@@ -811,8 +839,10 @@ def search(spec: dict, frozen: dict | None, params: dict) -> dict:
         j_cands = [0.0] + j_cands
     k_mults = vals("kMult", [1.0])
     c_mults = vals("cMult", [1.0])
+    # 锁定轴不可作为飞轮安装位（其惯量不允许被搜索改变）
     fw_shafts = [sid for sid in (params.get("flywheelShafts") or [])
-                 if sid in base_s["shafts"]]
+                 if sid in base_s["shafts"]
+                 and not base_s["shafts"][sid].get("locked")]
     nodes_n = 0
     truncated = False
 
@@ -826,6 +856,9 @@ def search(spec: dict, frozen: dict | None, params: dict) -> dict:
 
     def evaluate(j_sid, j_add, km, cm):
         nonlocal nodes_n, truncated
+        # 指定安装轴但附加惯量为 0 时与“不加飞轮”等价，跳过避免重复当前候选
+        if j_sid and j_add <= 0:
+            return
         if time.time() > deadline:
             truncated = True
             return
@@ -886,7 +919,8 @@ def search(spec: dict, frozen: dict | None, params: dict) -> dict:
             break
 
     results.sort(key=lambda c: (c["nResonanceZones"], c["maxTorque"],
-                                c["addedJ"], c["change"]))
+                                c["addedJ"], c["change"],
+                                c["flywheelShaft"] or "", c["kMult"], c["cMult"]))
     for c in results:
         c["current"] = (c["flywheelJ"] == 0.0 and c["kMult"] == 1.0
                         and c["cMult"] == 1.0)

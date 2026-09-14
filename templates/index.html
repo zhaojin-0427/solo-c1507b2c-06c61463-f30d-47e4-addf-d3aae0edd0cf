@@ -84,6 +84,7 @@
         <button class="tab" data-tab="backlash">回程间隙</button>
         <button class="tab" data-tab="loadcase">载荷工况</button>
         <button class="tab" data-tab="thermal">热平衡</button>
+        <button class="tab" data-tab="torsional">扭振</button>
         <button class="tab" data-tab="library">方案库</button>
       </div>
 
@@ -472,6 +473,95 @@
         <p id="th-empty" class="muted">还没有热平衡草稿：先在「载荷工况」页保存受载版本，再点「从载荷版本建立草稿」，冻结各级功率损失/转速/持续时间，然后填写环境、热容量、热阻、油品与风扇阈值；来源载荷变化时版本只标记过期。</p>
       </div>
 
+      <div class="panel" id="panel-torsional">
+        <div class="field-row">
+          <div class="field">
+            <label>工况名称（一次转速扫描一个工况）</label>
+            <input id="tv-name" placeholder="如：进给链全速域扭振扫描">
+          </div>
+        </div>
+        <div class="bl-btn-row">
+          <button id="btn-tv-new" type="button">从载荷版本建立草稿</button>
+          <button id="btn-tv-refreeze" type="button">重新冻结来源</button>
+          <label class="th-inline-lbl"><input id="tv-inline" type="checkbox"> 同时内联当前载荷草稿</label>
+        </div>
+        <div id="tv-stale" class="bl-stale" style="display:none">⚠ 冻结来源的载荷工况或源轮系已变化，版本只被标记为过期；可「重新冻结来源」后重算。</div>
+        <div class="field">
+          <label>已存版本</label>
+          <select id="tv-versions"></select>
+        </div>
+        <div class="bl-btn-row">
+          <button id="btn-tv-load" type="button">载入版本</button>
+          <button id="btn-tv-save" type="button" class="primary">采用并另存版本</button>
+          <button id="btn-tv-del" type="button" class="danger">删除版本</button>
+          <button id="btn-tv-reload-draft" type="button" title="从服务端恢复自动保存的草稿">↻ 重载草稿</button>
+        </div>
+
+        <div id="tv-body" style="display:none">
+          <h3>冻结来源与平均转矩</h3>
+          <div id="tv-source" class="tv-source-box"></div>
+
+          <h3>转速扫描与激励阶次</h3>
+          <div class="field-row">
+            <div class="field"><label>输入转速下限 rpm</label><input id="tv-rpm-min" type="number" step="10"></div>
+            <div class="field"><label>上限 rpm</label><input id="tv-rpm-max" type="number" step="10"></div>
+            <div class="field"><label>扫速步长 rpm</label><input id="tv-rpm-step" type="number" step="1" min="1"></div>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label>激励作用端</label>
+              <select id="tv-ex-node"></select>
+            </div>
+            <div class="field"><label>阻尼不足下限 ζ</label><input id="tv-zeta-min" type="number" step="0.005" min="0"></div>
+            <div class="field"><label>动态转矩限（×平均）</label><input id="tv-tfactor" type="number" step="0.1" min="1"></div>
+          </div>
+          <div id="tv-orders" class="tv-orders"></div>
+          <div class="bl-btn-row">
+            <button id="btn-tv-add-order" type="button">＋ 激励阶次</button>
+          </div>
+
+          <h3>各轴转动惯量 kg·m²（双击卡片锁定/解锁）</h3>
+          <div id="tv-shafts" class="tv-shaft-list"></div>
+
+          <h3>啮合 / 联轴器扭转刚度与阻尼</h3>
+          <div id="tv-springs" class="tv-spring-list"></div>
+
+          <h3>扭振结果 <span id="tv-badge" class="badge"></span></h3>
+          <div id="tv-summary" class="tt-summary muted">尚未计算</div>
+          <ul id="tv-issues" class="lc-issue-list"></ul>
+
+          <h3>Campbell 图（横线＝固有频率，斜线＝阶次激励，拖动红色转速游标）</h3>
+          <svg id="tv-campbell" xmlns="http://www.w3.org/2000/svg" class="tv-campbell"></svg>
+          <div id="tv-campbell-readout" class="tv-cursor-readout"></div>
+
+          <h3>固有模态（点击条目标注到 Campbell 图）</h3>
+          <ol id="tv-modes" class="tv-mode-list"></ol>
+          <svg id="tv-mode-svg" xmlns="http://www.w3.org/2000/svg" class="tv-mode-svg"></svg>
+
+          <h3>轴系扭转动画（游标转速下，红弧＝动态扭转角，弹簧色＝动态转矩）</h3>
+          <svg id="tv-shaft-svg" xmlns="http://www.w3.org/2000/svg" class="tv-shaft-svg"></svg>
+          <div id="tv-cursor-detail" class="tv-cursor-detail muted"></div>
+
+          <h3>避振方案搜索（飞轮惯量 × 未锁定联轴器刚度/阻尼）</h3>
+          <p class="muted small">已锁定的轴不接受附加飞轮，已锁定的联轴器刚度/阻尼不参与倍率搜索。候选按
+            <b>危险共振区数 → 最大动态转矩 → 附加惯量 → 改动量</b> 排序。</p>
+          <div class="field-row">
+            <div class="field"><label>飞轮候选轴</label><div id="tv-fw-shafts" class="tv-fw-checks"></div></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label>附加惯量候选 kg·m²（逗号分隔）</label><input id="tv-fw-j" value="0.001,0.005,0.02"></div>
+            <div class="field"><label>刚度倍率</label><input id="tv-k-mult" value="0.6,1,1.6"></div>
+            <div class="field"><label>阻尼倍率</label><input id="tv-c-mult" value="1,2"></div>
+          </div>
+          <button id="btn-tv-search" type="button" class="primary">搜索避振方案</button>
+          <div id="tvs-meta" class="muted small"></div>
+          <ol id="tvs-list" class="tv-search-list"></ol>
+        </div>
+        <p id="tv-empty" class="muted">还没有扭振草稿：先在「载荷工况」页保存受载版本（含平均转矩），
+          再点「从载荷版本建立草稿」，冻结动力路径/转速比/平均转矩后填写各轴惯量、啮合与联轴器刚度阻尼、
+          转速扫描范围与激励阶次；源轮系或载荷变化时版本只标记过期。</p>
+      </div>
+
       <div class="panel" id="panel-library">
         <div class="field-row">
           <input id="alt-name" placeholder="方案名称（可选）">
@@ -491,5 +581,6 @@
 <script src="/static/backlash.js"></script>
 <script src="/static/loadcase.js"></script>
 <script src="/static/thermal.js"></script>
+<script src="/static/torsional.js"></script>
 </body>
 </html>
