@@ -919,20 +919,16 @@ def search(spec: dict, frozen: dict | None, params: dict) -> dict:
         if truncated:
             break
 
-    results.sort(key=lambda c: (c["nIssues"], c["overTimeS"], c["peakTemp"],
+    # 所有候选统一按 超限时长 → 峰值温度 → 能耗 → 改动量 排序，再按数量截断；
+    # 不对错误数做额外排序、不为当前配置保留/补位。
+    results.sort(key=lambda c: (c["overTimeS"], c["peakTemp"],
                                 c["energyKwh"], c["change"]))
-    # 仅标记当前配置；排名完全由 超限时长→峰值→能耗→改动量 决定，不置顶。
-    # 但始终保留当前配置一行供对照（即使它排在截断名次数之后）。
     for c in results:
         c["current"] = (c["oilGrade"] == base_s["oil"]["grade"]
                         and abs(c["area"] - base_s["housing"]["area"]) < 1e-6
                         and abs(c["fanOn"] - base_s["fan"]["onTemp"]) < 1e-6
                         and abs(c["fanOff"] - base_s["fan"]["offTemp"]) < 1e-6)
-    top = results[:limit]
-    current_row = next((c for c in results if c["current"]), None)
-    if current_row is not None and current_row not in top:
-        top = top[:limit - 1] + [current_row]
-    return {"results": top, "nodes": nodes_n, "truncated": truncated,
+    return {"results": results[:limit], "nodes": nodes_n, "truncated": truncated,
             "base": {"overTimeS": cur["summary"]["overTimeS"],
                      "peakTemp": cur["summary"]["peakTemp"],
                      "energyKwh": cur["summary"]["energyKwh"],

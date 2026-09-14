@@ -199,6 +199,7 @@ function thReset() {
   thResult = null; thSearchRes = null; thCursor = -1; thStructKey = '';
   thSelectedNode = null; thFanOverride = '';
   $('#th-search-oils').dataset.built = '';
+  $('#th-visc-points').dataset.n = '';   // 强制按新草稿的折点重建行
   document.querySelectorAll('input[name="th-fan-override"]').forEach(r => { r.checked = false; });
 }
 let thDraftTimer = null;   // 服务端草稿防抖
@@ -399,17 +400,51 @@ function thRenderNodeParams() {
   }
 }
 
+/* 用一组新折点原地替换草稿内容并标记折点结构版本，
+   保证折点行随后按新值重建（牌号切换/采用候选/载入版本时用）。 */
+function thSetPoints(newPoints) {
+  const pts = thDraft.spec.oil.points;
+  const valid = (newPoints || [])
+    .filter(p => Number.isFinite(+p[0]) && Number.isFinite(+p[1]) && +p[1] > 0)
+    .map(p => [+p[0], +p[1]])
+    .sort((a, b) => a[0] - b[0]);
+  pts.length = valid.length;
+  valid.forEach((p, i) => { pts[i] = p; });
+  const wrap = $('#th-visc-points');
+  wrap.dataset.n = '';   // 长度/引用变化后强制重建折点行
+  return pts;
+}
+
 /* ---------------- 黏温折点录入 ---------------- */
+/* 折点始终规范化为 thDraft.spec.oil.points（温度升序、黏度为正）。
+   编辑时只原地改值并原地排序，绝不替换数组引用——行内 input 闭包持有
+   该数组，替换会导致第二次输入写到游离的旧数组、草稿得不到更新。 */
+function thValidPoints() {
+  return (thDraft.spec.oil.points || [])
+    .filter(p => Number.isFinite(+p[0]) && Number.isFinite(+p[1]) && +p[1] > 0)
+    .map(p => [+p[0], +p[1]])
+    .sort((a, b) => a[0] - b[0]);
+}
+
+/* 原地把草稿中的折点同步为 valid（同长度改值、排序；增删才改变长度），
+   返回有效折点；不替换数组引用。 */
+function thSyncPoints(valid) {
+  const pts = thDraft.spec.oil.points;
+  pts.length = valid.length;
+  valid.forEach((p, i) => { pts[i] = p; });
+  return pts;
+}
+
 function thRenderViscPoints() {
   const wrap = $('#th-visc-points');
   const pts = thDraft.spec.oil.points || [];
-  // 结构（点数）变化才重建，避免输入时焦点丢失；值回显由数据集标记控制
+  // 仅在折点数量（结构）变化时重建行；普通键入只回显、不抢焦点
   if (wrap.dataset.n === String(pts.length)) {
     wrap.querySelectorAll('.th-point-row').forEach((row, i) => {
-      const [ti, vi] = pts[i] || [null, null];
+      const p = pts[i] || [null, null];
       const a = row.querySelector('input[data-t]'), b = row.querySelector('input[data-v]');
-      if (document.activeElement !== a && a.value !== String(ti ?? '')) a.value = ti ?? '';
-      if (document.activeElement !== b && b.value !== String(vi ?? '')) b.value = vi ?? '';
+      if (document.activeElement !== a && a.value !== String(p[0] ?? '')) a.value = p[0] ?? '';
+      if (document.activeElement !== b && b.value !== String(p[1] ?? '')) b.value = p[1] ?? '';
     });
     return;
   }
@@ -425,8 +460,18 @@ function thRenderViscPoints() {
       inp.addEventListener('input', () => {
         const v = parseFloat(inp.value);
         const idx = dataKey === 't' ? 0 : 1;
-        // 仅在数值合法时写回规格，保留另一格与原值，避免键入过程中变 NaN
+        // 只在合法时原地写回同一个 points 数组（闭包持有的稳定引用）
         if (Number.isFinite(v) && (idx === 0 || v > 0)) pts[i][idx] = v;
+        const valid = thValidPoints();
+        if (valid.length >= 2) {
+          thSyncPoints(valid);   // 原地排序，引用不变
+          // 排序可能改变本行位置：值回显到正确的行（焦点仍在当前 input）
+          wrap.querySelectorAll('.th-point-row').forEach((r2, j) => {
+            const ta = r2.querySelector('input[data-t]'), va = r2.querySelector('input[data-v]');
+            if (document.activeElement !== ta) ta.value = valid[j][0];
+            if (document.activeElement !== va) va.value = valid[j][1];
+          });
+        }
         thOnOilPointsEdited();
       });
       return inp;
@@ -437,29 +482,29 @@ function thRenderViscPoints() {
     const del = h('button', { type: 'button', class: 'danger th-point-del' }, row, '删');
     del.addEventListener('click', () => {
       pts.splice(i, 1);
-      wrap.dataset.n = '';   // 强制重建
+      wrap.dataset.n = '';   // 强制按新长度重建
       thOnOilPointsEdited(); thRender();
     });
   });
 }
 
-/* 用户改动折点：标记为自定义曲线并即时重算/重绘。
-   编辑过程中允许中间非法状态（空值），只把合法折点用于计算与显示；
-   不重排/删除原始行，避免键入时跳格。后端仍会排序与钳制。 */
+/* 用户改动折点后的统一处理：至少 2 个有效折点才参与计算并标记牌号；
+   每次输入都保存草稿（防抖写服务端）并刷新曲线。 */
 function thOnOilPointsEdited() {
-  const raw = thDraft.spec.oil.points || [];
-  const valid = raw
-    .filter(p => Number.isFinite(+p[0]) && Number.isFinite(+p[1]) && +p[1] > 0)
-    .map(p => [+p[0], +p[1]])
-    .sort((a, b) => a[0] - b[0]);
-  if (valid.length >= 2) thDraft.spec.oil.points = valid;
-  const grade = thDraft.spec.oil.grade;
-  const matchesPreset = thOils.some(o => o.grade === grade && thPointsEqual(o.points, valid));
-  if (!matchesPreset && valid.length >= 2) thDraft.spec.oil.grade = '自定义';
+  const valid = thValidPoints();
+  if (valid.length < 2) {
+    thSaveDraft();
+    thRenderViscCurve();
+    return;
+  }
+  thSyncPoints(valid);
+  const matchesPreset = thOils.some(o => o.grade === thDraft.spec.oil.grade &&
+    thPointsEqual(o.points, thDraft.spec.oil.points));
+  if (!matchesPreset) thDraft.spec.oil.grade = '自定义';
   const sel = $('#th-oil-grade');
   if (sel && sel.value !== thDraft.spec.oil.grade) sel.value = thDraft.spec.oil.grade;
   thSaveDraft();
-  if (valid.length >= 2) thAnalyzeSoon();
+  thAnalyzeSoon();
   thRenderViscCurve();
 }
 
@@ -979,11 +1024,12 @@ function thApplyCandidate(c) {
   const sp = thDraft.spec;
   if (c.patch.oil.points) {
     sp.oil.grade = c.patch.oil.grade;
-    sp.oil.points = c.patch.oil.points;
+    thSetPoints(c.patch.oil.points);
   }
   sp.housing.area = c.patch.housing.area;
   sp.fan.onTemp = c.patch.fan.onTemp;
   sp.fan.offTemp = c.patch.fan.offTemp;
+  $('#th-visc-points').dataset.n = '';
   thSaveDraft();
   // 采用后先重算，待解返回再另存版本（solution 为采用方案的完整时间步曲线）
   (async () => {
@@ -1074,7 +1120,7 @@ function thBind() {
     const preset = thOils.find(o => o.grade === e.target.value);
     if (preset) {
       thDraft.spec.oil.grade = preset.grade;
-      thDraft.spec.oil.points = preset.points.map(p => [...p]);
+      thSetPoints(preset.points);
     } else {
       thDraft.spec.oil.grade = '自定义';
     }
