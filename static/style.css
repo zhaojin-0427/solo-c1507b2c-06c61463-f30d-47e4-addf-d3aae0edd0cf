@@ -553,3 +553,11 @@ h3:first-child { margin-top: 4px; }
   align-items: center; gap: 3px; }
 #ths-list .current-cand { border-color: var(--ok); background: #f0f7f0; }
 .th-inline-lbl { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 3px; }
+.th-points-head { display: flex; justify-content: space-between; align-items: center;
+  font-size: 12px; color: var(--muted); margin: 4px 0; }
+.th-points { display: flex; flex-wrap: wrap; gap: 6px; }
+.th-point-row { display: inline-flex; align-items: center; gap: 4px;
+  border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; background: var(--panel); }
+.th-point-row input { width: 64px; }
+.th-point-sep { color: var(--muted); }
+.th-point-del { padding: 1px 7px; }

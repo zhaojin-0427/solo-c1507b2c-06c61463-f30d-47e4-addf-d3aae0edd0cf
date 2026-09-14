@@ -31,21 +31,43 @@ let thSelectedNode = null; // 联动查看热流的节点
 let thStructKey = '';
 let thSearchRes = null;
 
-/* ---------------- 指纹（与 thermal.fingerprint / lcFingerprint 同口径） ---------------- */
+/* ---------------- 指纹（与 thermal.fingerprint 逐字节一致） ---------------- */
+/* 规范数值：6 位小数取整，整数去掉小数点；与后端 _norm_num 同口径 */
+function thNormNum(v, dflt) {
+  let f = Number(v);
+  if (!Number.isFinite(f)) f = Number.isFinite(+dflt) ? +dflt : 0;
+  f = Math.round(f * 1e6) / 1e6;
+  if (Object.is(f, -0)) f = 0;
+  return Number.isInteger(f) ? f : f;
+}
+
+/* 紧凑、递归按 key 排序的 JSON；与后端 canonical_dumps 输出一致 */
+function thCanonicalStringify(obj) {
+  if (obj === null || typeof obj !== 'object') return JSON.stringify(obj);
+  if (Array.isArray(obj)) return '[' + obj.map(thCanonicalStringify).join(',') + ']';
+  const keys = Object.keys(obj).sort();
+  return '{' + keys.map(k => JSON.stringify(k) + ':' + thCanonicalStringify(obj[k])).join(',') + '}';
+}
+
 function thFingerprint(st) {
   const S = Object.fromEntries((st.shafts || []).map(s => [s.id, s]));
   const G = Object.fromEntries((st.gears || []).map(g => [g.id, g]));
   const items = [];
   for (const e of (st.meshes || [])) {
     const ga = G[e.gearA], gb = G[e.gearB];
-    if (!ga || !gb) { items.push([e.id, 'broken']); continue; }
+    if (!ga || !gb) { items.push([String(e.id), 'broken']); continue; }
     const sa = S[ga.shaftId] || {}, sb = S[gb.shaftId] || {};
-    items.push([e.id, ga.z, ga.module, ga.x || 0, ga.pressureAngle || 20,
-      !!ga.internal, gb.z, gb.module, gb.x || 0, gb.pressureAngle || 20,
-      !!gb.internal, +sa.x || 0, +sa.y || 0, +sb.x || 0, +sb.y || 0]);
+    items.push([
+      String(e.id),
+      thNormNum(ga.z), thNormNum(ga.module), thNormNum(ga.x || 0),
+      thNormNum(ga.pressureAngle || 20), !!ga.internal,
+      thNormNum(gb.z), thNormNum(gb.module), thNormNum(gb.x || 0),
+      thNormNum(gb.pressureAngle || 20), !!gb.internal,
+      thNormNum(sa.x || 0), thNormNum(sa.y || 0),
+      thNormNum(sb.x || 0), thNormNum(sb.y || 0)]);
   }
-  items.sort((a, b) => String(a[0]).localeCompare(String(b[0])));
-  return JSON.stringify(items);
+  items.sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0);
+  return thCanonicalStringify(items);
 }
 
 function thSourceStale() {
@@ -53,14 +75,12 @@ function thSourceStale() {
   for (const src of Object.values(thDraft.frozen.sources || {})) {
     if (src.error) continue;
     if (src.inline) {
-      // 内联来源：与当前载荷草稿比对（项目指纹 + 载荷参数）
+      // 内联来源：源轮系快照与载荷参数都与当前载荷草稿一致才不过期
       if (typeof lcDraft === 'undefined' || !lcDraft) return true;
       if (src.fingerprint !== thFingerprint(lcDraft.snapshot)) return true;
-      const lcNow = JSON.stringify(lcDraft.spec);
-      if (src.loadSpec && src.loadSpec !== lcNow) return true;
+      if (src.loadSpec && src.loadSpec !== thCanonicalStringify(lcDraft.spec)) return true;
     } else {
-      // 已保存载荷版本：仅当源轮系项目与版本快照不一致时提示（版本行不可变，
-      // 用户通常是想看“项目变化后该热平衡是否仍代表当前机器”）
+      // 已保存载荷版本不可变：仅当当前项目轮系与该版本快照不一致时提示过期
       if (src.fingerprint !== thFingerprint(state)) return true;
     }
   }
@@ -181,8 +201,25 @@ function thReset() {
   $('#th-search-oils').dataset.built = '';
   document.querySelectorAll('input[name="th-fan-override"]').forEach(r => { r.checked = false; });
 }
+let thDraftTimer = null;   // 服务端草稿防抖
+let thDraftLoading = false; // 正在从服务端载入，抑制回写
 function thSaveDraft() {
+  if (!thDraft || thDraftLoading) return;
+  // 本地立即保存（离线/刷新当前页即时恢复）
   try { localStorage.setItem(TH_KEY, JSON.stringify(thDraft)); } catch (e) { /* ignore */ }
+  // 服务端防抖保存（换浏览器/清站点数据后可恢复）
+  clearTimeout(thDraftTimer);
+  thDraftTimer = setTimeout(thPushDraft, 800);
+}
+async function thPushDraft() {
+  if (!thDraft) return;
+  try {
+    await fetch('/api/thermal/draft', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ draft: { name: thDraft.name,
+        spec: thDraft.spec, frozen: thDraft.frozen } }),
+    });
+  } catch (e) { /* 网络失败时本地副本仍在 */ }
 }
 function thSpecChanged() { thSearchRes = null; thSaveDraft(); thAnalyzeSoon(); }
 
@@ -225,6 +262,7 @@ function thRender() {
   thRenderSources();
   thRenderSegments();
   thRenderNodeParams();
+  thRenderViscPoints();
   thRenderViscCurve();
   thRenderSearchOils();
   thRenderResults();
@@ -361,11 +399,88 @@ function thRenderNodeParams() {
   }
 }
 
+/* ---------------- 黏温折点录入 ---------------- */
+function thRenderViscPoints() {
+  const wrap = $('#th-visc-points');
+  const pts = thDraft.spec.oil.points || [];
+  // 结构（点数）变化才重建，避免输入时焦点丢失；值回显由数据集标记控制
+  if (wrap.dataset.n === String(pts.length)) {
+    wrap.querySelectorAll('.th-point-row').forEach((row, i) => {
+      const [ti, vi] = pts[i] || [null, null];
+      const a = row.querySelector('input[data-t]'), b = row.querySelector('input[data-v]');
+      if (document.activeElement !== a && a.value !== String(ti ?? '')) a.value = ti ?? '';
+      if (document.activeElement !== b && b.value !== String(vi ?? '')) b.value = vi ?? '';
+    });
+    return;
+  }
+  wrap.dataset.n = String(pts.length);
+  wrap.innerHTML = '';
+  pts.forEach((p, i) => {
+    const row = h('div', { class: 'th-point-row' }, wrap);
+    const mk = (dataKey, val, ph) => {
+      const attrs = { type: 'number', step: dataKey === 't' ? '1' : '0.1', placeholder: ph };
+      attrs['data-' + dataKey] = '';
+      const inp = h('input', attrs, row);
+      inp.value = val ?? '';
+      inp.addEventListener('input', () => {
+        const v = parseFloat(inp.value);
+        const idx = dataKey === 't' ? 0 : 1;
+        // 仅在数值合法时写回规格，保留另一格与原值，避免键入过程中变 NaN
+        if (Number.isFinite(v) && (idx === 0 || v > 0)) pts[i][idx] = v;
+        thOnOilPointsEdited();
+      });
+      return inp;
+    };
+    mk('t', p[0], '°C');
+    h('span', { class: 'th-point-sep' }, row, '—');
+    mk('v', p[1], 'mm²/s');
+    const del = h('button', { type: 'button', class: 'danger th-point-del' }, row, '删');
+    del.addEventListener('click', () => {
+      pts.splice(i, 1);
+      wrap.dataset.n = '';   // 强制重建
+      thOnOilPointsEdited(); thRender();
+    });
+  });
+}
+
+/* 用户改动折点：标记为自定义曲线并即时重算/重绘。
+   编辑过程中允许中间非法状态（空值），只把合法折点用于计算与显示；
+   不重排/删除原始行，避免键入时跳格。后端仍会排序与钳制。 */
+function thOnOilPointsEdited() {
+  const raw = thDraft.spec.oil.points || [];
+  const valid = raw
+    .filter(p => Number.isFinite(+p[0]) && Number.isFinite(+p[1]) && +p[1] > 0)
+    .map(p => [+p[0], +p[1]])
+    .sort((a, b) => a[0] - b[0]);
+  if (valid.length >= 2) thDraft.spec.oil.points = valid;
+  const grade = thDraft.spec.oil.grade;
+  const matchesPreset = thOils.some(o => o.grade === grade && thPointsEqual(o.points, valid));
+  if (!matchesPreset && valid.length >= 2) thDraft.spec.oil.grade = '自定义';
+  const sel = $('#th-oil-grade');
+  if (sel && sel.value !== thDraft.spec.oil.grade) sel.value = thDraft.spec.oil.grade;
+  thSaveDraft();
+  if (valid.length >= 2) thAnalyzeSoon();
+  thRenderViscCurve();
+}
+
+function thPointsEqual(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  return a.every((p, i) => Math.abs(p[0] - b[i][0]) < 1e-9 && Math.abs(p[1] - b[i][1]) < 1e-9);
+}
+
 /* ---------------- 黏温曲线 SVG ---------------- */
 function thRenderViscCurve() {
   const svg = $('#th-visc-svg');
   const W = 300, H = 90, ml = 34, mr = 8, mt = 8, mb = 18;
-  const pts = thDraft.spec.oil.points || [[40, 220], [100, 18.7]];
+  const pts = (thDraft.spec.oil.points || [])
+    .filter(p => Number.isFinite(+p[0]) && Number.isFinite(+p[1]) && +p[1] > 0);
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.innerHTML = '';
+  if (pts.length < 2) {
+    svgEl('text', { x: W / 2, y: H / 2, class: 'lc-tick',
+      text: '至少需要 2 个有效折点' }, svg).setAttribute('text-anchor', 'middle');
+    return;
+  }
   const temps = [], viscs = [];
   for (let T = 20; T <= 120; T += 2) {
     temps.push(T); viscs.push(thOilVisc(pts, T));
@@ -400,7 +515,11 @@ function thRenderViscCurve() {
 }
 
 function thOilVisc(points, t) {
-  const ps = [...points].sort((a, b) => a[0] - b[0]);
+  const ps = (points || [])
+    .filter(p => Number.isFinite(+p[0]) && Number.isFinite(+p[1]) && +p[1] > 0)
+    .map(p => [+p[0], +p[1]])
+    .sort((a, b) => a[0] - b[0]);
+  if (ps.length < 2) return Number.NaN;
   if (t <= ps[0][0]) return ps[0][1];
   if (t >= ps[ps.length - 1][0]) return ps[ps.length - 1][1];
   for (let i = 0; i < ps.length - 1; i++) {
@@ -962,6 +1081,17 @@ function thBind() {
     thSpecChanged(); thRender();
   });
 
+  $('#btn-th-add-point').addEventListener('click', () => {
+    if (!thDraft) return;
+    const pts = thDraft.spec.oil.points;
+    const lastT = pts.length ? pts[pts.length - 1][0] : 40;
+    const lastV = pts.length ? pts[pts.length - 1][1] : 100;
+    // 新折点默认在末端升温 20°C、黏度按经验减半
+    pts.push([+lastT + 20, Math.max(1, +(lastV / 2).toFixed(2))]);
+    $('#th-visc-points').dataset.n = '';   // 强制重建
+    thOnOilPointsEdited(); thRender();
+  });
+
   $('#btn-th-add-run').addEventListener('click', () => {
     if (!thDraft) return;
     const key = (thDraft.frozen.order || [])[0];
@@ -999,6 +1129,16 @@ function thBind() {
 
   $('#btn-th-search').addEventListener('click', thRunSearch);
   $('#btn-th-save').addEventListener('click', () => thSaveVersion(false));
+  $('#btn-th-reload-draft').addEventListener('click', async () => {
+    const d = await thLoadServerDraft();
+    if (!d) { flashHint('服务端还没有保存的热平衡草稿'); return; }
+    thDraft = d;
+    $('#th-oil-grade').dataset.built = '';
+    thReset();
+    try { localStorage.setItem(TH_KEY, JSON.stringify(d)); } catch (e) { /* ignore */ }
+    thAnalyzeSoon(); thRender(); thLoadVersions();
+    flashHint('已从服务端恢复热平衡草稿');
+  });
   $('#btn-th-load').addEventListener('click', async () => {
     const id = $('#th-versions').value;
     if (!id) return;
@@ -1018,14 +1158,32 @@ function thBind() {
   });
 }
 
-/* ---------------- 启动 ---------------- */
-(function thInit() {
+/* ---------------- 启动（服务端草稿优先，本地为离线后备） ---------------- */
+async function thLoadServerDraft() {
   try {
-    const raw = localStorage.getItem(TH_KEY);
-    if (raw) thDraft = JSON.parse(raw);
-  } catch (e) { thDraft = null; }
-  thLoadOils();
+    const d = await (await fetch('/api/thermal/draft')).json();
+    if (d && d.draft && d.draft.spec) return d.draft;
+  } catch (e) { /* 网络失败退到本地 */ }
+  return null;
+}
+
+(async function thInit() {
   thBind();
+  await thLoadOils();
+  // 服务端草稿优先（跨浏览器/清站点数据后可恢复）；否则用本地离线副本
+  thDraftLoading = true;
+  const server = await thLoadServerDraft();
+  if (server) {
+    thDraft = server;
+    try { localStorage.setItem(TH_KEY, JSON.stringify(server)); } catch (e) { /* ignore */ }
+  } else {
+    try {
+      const raw = localStorage.getItem(TH_KEY);
+      if (raw) thDraft = JSON.parse(raw);
+    } catch (e) { thDraft = null; }
+    if (thDraft) thPushDraft();   // 服务端无草稿时把本地副本补传上去
+  }
+  thDraftLoading = false;
   thRender();
   if (thDraft) thAnalyze();
   thLoadVersions();

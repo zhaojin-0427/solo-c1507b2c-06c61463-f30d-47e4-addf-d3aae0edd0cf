@@ -97,26 +97,49 @@ def oil_by_grade(grade):
 
 # ----------------------------- 来源指纹（过期判定） -----------------------------
 
+def _norm_num(v, default=0.0):
+    """规范标量：与前端 thNormNum 同口径（6 位小数取整、整数去掉小数点），
+    保证 Python/JS 两侧 JSON 序列化逐字节一致。"""
+    try:
+        f = round(float(v), 6)
+    except (TypeError, ValueError):
+        f = default
+    if f == int(f):
+        return int(f)
+    return f
+
+
+def canonical_dumps(obj) -> str:
+    """紧凑、按键排序的 JSON；与前端 thCanonicalStringify 输出一致。"""
+    return json.dumps(obj, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":"))
+
+
 def fingerprint(st: dict) -> str:
-    """与前端 lcFingerprint 同口径：齿轮 z/m/x/压力角/内齿标记 + 轴位。"""
-    shafts = {s["id"]: s for s in st.get("shafts", [])}
-    gears = {g["id"]: g for g in st.get("gears", [])}
+    """与前端 thFingerprint 同口径（逐字节一致）：
+    齿轮 z/m/x/压力角/内齿标记 + 轴位，紧凑 JSON、id 按字符串排序。"""
+    shafts = {s.get("id"): s for s in st.get("shafts", [])}
+    gears = {g.get("id"): g for g in st.get("gears", [])}
     items = []
     for e in st.get("meshes", []):
         ga, gb = gears.get(e.get("gearA")), gears.get(e.get("gearB"))
         if not ga or not gb:
-            items.append([e.get("id"), "broken"])
+            items.append([str(e.get("id")), "broken"])
             continue
-        sa, sb = shafts.get(ga.get("shaftId"), {}), shafts.get(gb.get("shaftId"), {})
+        sa = shafts.get(ga.get("shaftId"), {}) or {}
+        sb = shafts.get(gb.get("shaftId"), {}) or {}
         items.append([
-            e.get("id"), ga.get("z"), ga.get("module"), ga.get("x", 0) or 0,
-            ga.get("pressureAngle", 20) or 20, bool(ga.get("internal")),
-            gb.get("z"), gb.get("module"), gb.get("x", 0) or 0,
-            gb.get("pressureAngle", 20) or 20, bool(gb.get("internal")),
-            sa.get("x", 0) or 0, sa.get("y", 0) or 0,
-            sb.get("x", 0) or 0, sb.get("y", 0) or 0])
-    items.sort(key=lambda a: str(a[0]))
-    return json.dumps(items, ensure_ascii=False, sort_keys=True)
+            str(e.get("id")),
+            _norm_num(ga.get("z")), _norm_num(ga.get("module")),
+            _norm_num(ga.get("x", 0) or 0), _norm_num(ga.get("pressureAngle", 20) or 20),
+            bool(ga.get("internal")),
+            _norm_num(gb.get("z")), _norm_num(gb.get("module")),
+            _norm_num(gb.get("x", 0) or 0), _norm_num(gb.get("pressureAngle", 20) or 20),
+            bool(gb.get("internal")),
+            _norm_num(sa.get("x", 0) or 0), _norm_num(sa.get("y", 0) or 0),
+            _norm_num(sb.get("x", 0) or 0), _norm_num(sb.get("y", 0) or 0)])
+    items.sort(key=lambda a: a[0])
+    return canonical_dumps(items)
 
 
 # ----------------------------- 冻结载荷来源 -----------------------------
@@ -191,7 +214,7 @@ def freeze_sources(sources: list) -> dict:
             "caseId": src.get("caseId"), "version": src.get("version"),
             "inline": bool(src.get("inline")),
             "fingerprint": fingerprint(st),
-            "loadSpec": json.dumps(sp, ensure_ascii=False, sort_keys=True),
+            "loadSpec": canonical_dumps(sp),
             "snapshot": st,
             "inputId": sp.get("inputId"), "inputRpm": (res.get("input") or {}).get("rpm"),
             "pInputKw": (res.get("input") or {}).get("powerKw", 0.0),
@@ -898,17 +921,18 @@ def search(spec: dict, frozen: dict | None, params: dict) -> dict:
 
     results.sort(key=lambda c: (c["nIssues"], c["overTimeS"], c["peakTemp"],
                                 c["energyKwh"], c["change"]))
-    # 标记当前配置
+    # 仅标记当前配置；排名完全由 超限时长→峰值→能耗→改动量 决定，不置顶。
+    # 但始终保留当前配置一行供对照（即使它排在截断名次数之后）。
     for c in results:
         c["current"] = (c["oilGrade"] == base_s["oil"]["grade"]
                         and abs(c["area"] - base_s["housing"]["area"]) < 1e-6
                         and abs(c["fanOn"] - base_s["fan"]["onTemp"]) < 1e-6
                         and abs(c["fanOff"] - base_s["fan"]["offTemp"]) < 1e-6)
-    # 当前配置必须出现在候选中（对照用）：排到列表最前并标记
-    current = next((c for c in results if c["current"]), None)
-    others = [c for c in results if not c["current"]][:limit - 1]
-    out = ([current] if current else []) + others
-    return {"results": out, "nodes": nodes_n, "truncated": truncated,
+    top = results[:limit]
+    current_row = next((c for c in results if c["current"]), None)
+    if current_row is not None and current_row not in top:
+        top = top[:limit - 1] + [current_row]
+    return {"results": top, "nodes": nodes_n, "truncated": truncated,
             "base": {"overTimeS": cur["summary"]["overTimeS"],
                      "peakTemp": cur["summary"]["peakTemp"],
                      "energyKwh": cur["summary"]["energyKwh"],

@@ -86,6 +86,12 @@ def init_db():
         solution TEXT,
         created_at REAL
     );
+    CREATE TABLE IF NOT EXISTS thermal_drafts (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        name TEXT,
+        data TEXT NOT NULL,
+        updated_at REAL
+    );
     """)
     con.commit()
     con.close()
@@ -453,6 +459,40 @@ def api_loadcase_case_del(case_id):
 def api_thermal_oils():
     """可选油品黏温曲线（牌号 + 40/100°C 折线段）。"""
     return jsonify({"oils": thermal.OIL_GRADES})
+
+
+@app.get("/api/thermal/draft")
+def api_thermal_draft_get():
+    """读取服务端保存的热平衡草稿（换浏览器/清站点数据后可恢复）。"""
+    row = db().execute(
+        "SELECT name, data, updated_at FROM thermal_drafts WHERE id = 1").fetchone()
+    if not row:
+        return jsonify({"draft": None})
+    try:
+        return jsonify({"draft": json.loads(row["data"]), "name": row["name"],
+                        "updatedAt": row["updated_at"]})
+    except (ValueError, TypeError):
+        return jsonify({"draft": None})
+
+
+@app.put("/api/thermal/draft")
+def api_thermal_draft_put():
+    """保存热平衡草稿到服务端（name/spec/frozen），与版本分开。"""
+    body = request.get_json(force=True)
+    draft = body.get("draft")
+    if not isinstance(draft, dict) or not isinstance(draft.get("spec"), dict):
+        return jsonify({"error": "draft.spec 必须为对象"}), 400
+    con = db()
+    con.execute(
+        """INSERT INTO thermal_drafts (id, name, data, updated_at)
+           VALUES (1, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             name=excluded.name, data=excluded.data,
+             updated_at=excluded.updated_at""",
+        ((draft.get("name") or ""), json.dumps(draft, ensure_ascii=False),
+         time.time()))
+    con.commit()
+    return jsonify({"ok": True})
 
 
 @app.post("/api/thermal/freeze")
