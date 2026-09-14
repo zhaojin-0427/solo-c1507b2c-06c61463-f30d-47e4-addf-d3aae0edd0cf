@@ -12,6 +12,7 @@ import meshing
 import contact
 import backlash
 import loadcase
+import thermal
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "geartrain.db")
@@ -72,6 +73,16 @@ def init_db():
         note TEXT,
         spec TEXT NOT NULL,
         snapshot TEXT NOT NULL,
+        solution TEXT,
+        created_at REAL
+    );
+    CREATE TABLE IF NOT EXISTS thermal_cases (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        note TEXT,
+        spec TEXT NOT NULL,
+        frozen TEXT NOT NULL,
         solution TEXT,
         created_at REAL
     );
@@ -432,6 +443,108 @@ def api_loadcase_case_get(case_id):
 @app.delete("/api/loadcase/cases/<int:case_id>")
 def api_loadcase_case_del(case_id):
     db().execute("DELETE FROM load_cases WHERE id = ?", (case_id,))
+    db().commit()
+    return jsonify({"ok": True})
+
+
+# ----------------------------- 热平衡工况 -----------------------------
+
+@app.get("/api/thermal/oils")
+def api_thermal_oils():
+    """可选油品黏温曲线（牌号 + 40/100°C 折线段）。"""
+    return jsonify({"oils": thermal.OIL_GRADES})
+
+
+@app.post("/api/thermal/freeze")
+def api_thermal_freeze():
+    """从已保存（或当前草稿）的载荷工况冻结各级损失/转速/持续时间与节点默认参数。
+    body: {"sources": [{"key","name","state","spec","caseId","version","inline"}]}"""
+    body = request.get_json(force=True)
+    sources = body.get("sources", [])
+    if not isinstance(sources, list) or not sources:
+        return jsonify({"error": "sources 必须为非空数组"}), 400
+    clean = []
+    for src in sources:
+        if not isinstance(src, dict) or not isinstance(src.get("state"), dict):
+            continue
+        clean.append({"key": str(src.get("key")), "name": src.get("name"),
+                      "state": src["state"], "spec": src.get("spec", {}),
+                      "caseId": src.get("caseId"), "version": src.get("version"),
+                      "inline": bool(src.get("inline"))})
+    return jsonify(thermal.freeze_sources(clean))
+
+
+@app.post("/api/thermal/analyze")
+def api_thermal_analyze():
+    """热网络时间步迭代：温度、黏温反馈效率、热流、风扇状态与四类问题时段。"""
+    body = request.get_json(force=True)
+    try:
+        return jsonify(thermal.analyze_case(body.get("spec", {}), body.get("frozen")))
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "issues": [
+            {"severity": "error", "code": "BAD_REQUEST",
+             "message": "热平衡参数有误：%s" % exc, "refs": {}}]}), 400
+
+
+@app.post("/api/thermal/search")
+def api_thermal_search():
+    """油品 × 散热片面积 × 风扇阈值搜索，按超限时长/峰值/能耗/改动量排序。"""
+    body = request.get_json(force=True)
+    try:
+        return jsonify(thermal.search(body.get("spec", {}), body.get("frozen"), body))
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"results": [], "note": "搜索参数有误：%s" % exc}), 400
+
+
+@app.get("/api/thermal/cases")
+def api_thermal_cases():
+    rows = db().execute(
+        "SELECT id, name, version, note, created_at FROM thermal_cases "
+        "ORDER BY name, version DESC").fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.post("/api/thermal/cases")
+def api_thermal_case_save():
+    """另存热平衡工况版本：同名版本号递增；solution 保留时间步与全部温度曲线。"""
+    body = request.get_json(force=True)
+    name = (body.get("name") or "").strip() or "热平衡工况"
+    spec, frozen = body.get("spec"), body.get("frozen")
+    if not isinstance(spec, dict) or not isinstance(frozen, dict):
+        return jsonify({"error": "spec 与 frozen 必须为对象"}), 400
+    con = db()
+    row = con.execute(
+        "SELECT COALESCE(MAX(version), 0) AS v FROM thermal_cases WHERE name = ?",
+        (name,)).fetchone()
+    version = row["v"] + 1
+    cur = con.execute(
+        """INSERT INTO thermal_cases (name, version, note, spec, frozen, solution, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (name, version, body.get("note"),
+         json.dumps(spec, ensure_ascii=False),
+         json.dumps(frozen, ensure_ascii=False),
+         json.dumps(body.get("solution"), ensure_ascii=False)
+         if body.get("solution") is not None else None,
+         time.time()))
+    con.commit()
+    return jsonify({"id": cur.lastrowid, "version": version, "ok": True})
+
+
+@app.get("/api/thermal/cases/<int:case_id>")
+def api_thermal_case_get(case_id):
+    row = db().execute("SELECT * FROM thermal_cases WHERE id = ?", (case_id,)).fetchone()
+    if not row:
+        return jsonify({"error": "不存在"}), 404
+    d = dict(row)
+    d["spec"] = json.loads(d["spec"])
+    d["frozen"] = json.loads(d["frozen"])
+    d["solution"] = json.loads(d["solution"]) if d["solution"] else None
+    return d
+
+
+@app.delete("/api/thermal/cases/<int:case_id>")
+def api_thermal_case_del(case_id):
+    db().execute("DELETE FROM thermal_cases WHERE id = ?", (case_id,))
     db().commit()
     return jsonify({"ok": True})
 

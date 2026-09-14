@@ -83,6 +83,7 @@
         <button class="tab" data-tab="search">配齿搜索</button>
         <button class="tab" data-tab="backlash">回程间隙</button>
         <button class="tab" data-tab="loadcase">载荷工况</button>
+        <button class="tab" data-tab="thermal">热平衡</button>
         <button class="tab" data-tab="library">方案库</button>
       </div>
 
@@ -331,6 +332,137 @@
         <p id="lc-empty" class="muted">还没有载荷工况草稿：点「从项目快照建立草稿」，把当前轮系快照为一次受载工况（输入转矩/转速/持续时间、各啮合效率与载荷系数、分支比例、轴上安装面与轴承）；之后源轮系变化只将已存版本标记为过期。</p>
       </div>
 
+      <div class="panel" id="panel-thermal">
+        <div class="field-row">
+          <div class="field">
+            <label>工况名称（一段连续运行或启停循环一个工况）</label>
+            <input id="th-name" placeholder="如：进给链 8h 额定 + 夜间停机">
+          </div>
+        </div>
+        <div class="bl-btn-row">
+          <button id="btn-th-new" type="button">从载荷版本建立草稿</button>
+          <button id="btn-th-refresh" type="button">重新冻结来源</button>
+          <label class="th-inline-lbl"><input id="th-inline" type="checkbox"> 同时内联当前载荷草稿</label>
+        </div>
+        <div id="th-stale" class="bl-stale" style="display:none">⚠ 冻结来源的载荷工况或源轮系已变化，热平衡版本只被标记为过期，可「重新冻结来源」后重算。</div>
+        <div class="field">
+          <label>已存版本</label>
+          <select id="th-versions"></select>
+        </div>
+        <div class="bl-btn-row">
+          <button id="btn-th-load" type="button">载入</button>
+          <button id="btn-th-save" type="button" class="primary">另存版本</button>
+          <button id="btn-th-del" type="button" class="danger">删除版本</button>
+        </div>
+
+        <div id="th-body" style="display:none">
+          <h3>冻结来源与时段编排</h3>
+          <p class="muted small">每个运行段从一份已冻结的载荷工况取得各级啮合损失、转速与轴承载荷；停机段全部热源为 0、只散热。载荷/转速比例可在段上缩放（启停循环用）。</p>
+          <div id="th-sources"></div>
+          <div id="th-segments" class="th-seg-list"></div>
+          <div class="bl-btn-row">
+            <button id="btn-th-add-run" type="button">＋ 运行段</button>
+            <button id="btn-th-add-stop" type="button">＋ 停机段</button>
+          </div>
+
+          <h3>环境 / 初始 / 时间步</h3>
+          <div class="field-row">
+            <div class="field"><label>环境温度 °C</label><input id="th-ambient" type="number" step="1"></div>
+            <div class="field"><label>初始温度 °C</label><input id="th-init" type="number" step="1"></div>
+            <div class="field"><label>报告时间步 s</label><input id="th-dt" type="number" step="5" min="1"></div>
+          </div>
+
+          <h3>润滑油与黏温曲线</h3>
+          <div class="field-row">
+            <div class="field"><label>油品</label><select id="th-oil-grade"></select></div>
+            <div class="field"><label>油量 L</label><input id="th-oil-vol" type="number" step="0.1" min="0.01"></div>
+            <div class="field"><label>密度 kg/m³</label><input id="th-oil-rho" type="number" step="5"></div>
+            <div class="field"><label>比热容 J/(kg·K)</label><input id="th-oil-cp" type="number" step="50"></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label>允许最低黏度 mm²/s</label><input id="th-visc-min" type="number" step="1"></div>
+            <div class="field"><label>允许最高黏度 mm²/s</label><input id="th-visc-max" type="number" step="10"></div>
+            <div class="field"><label>效率黏敏度</label><input id="th-oil-sens" type="number" step="0.01" min="0"></div>
+          </div>
+          <svg id="th-visc-svg" xmlns="http://www.w3.org/2000/svg" class="th-visc-svg"></svg>
+          <p class="muted small">折线段为 40°C/100°C 运动黏度（log10 插值）；油温经曲线反馈到啮合效率与轴承/搅油黏性损失。</p>
+
+          <h3>热网络参数</h3>
+          <div class="field-row">
+            <div class="field"><label>箱体热容量 kJ/K</label><input id="th-h-cap" type="number" step="1"></div>
+            <div class="field"><label>散热面积 m²</label><input id="th-h-area" type="number" step="0.05" min="0.01"></div>
+            <div class="field"><label>自然对流热阻 K/kW</label><input id="th-rnat" type="number" step="0.5"></div>
+            <div class="field"><label>风扇热阻 K/kW</label><input id="th-rfan" type="number" step="0.2"></div>
+            <div class="field"><label>油→箱热阻 K/kW</label><input id="th-roh" type="number" step="0.01"></div>
+          </div>
+          <div id="th-nodes" class="th-node-list"></div>
+
+          <h3>风扇与温度限</h3>
+          <div class="field-row">
+            <div class="field"><label>风扇模式</label>
+              <select id="th-fan-mode">
+                <option value="auto">自动（带回差）</option>
+                <option value="on">强制开启</option>
+                <option value="off">强制关闭</option>
+              </select>
+            </div>
+            <div class="field"><label>启动温度 °C</label><input id="th-fan-on" type="number" step="1"></div>
+            <div class="field"><label>停机温度 °C</label><input id="th-fan-off" type="number" step="1"></div>
+            <div class="field"><label>风扇功率 kW</label><input id="th-fan-p" type="number" step="0.05"></div>
+            <div class="field"><label>最短启停周期 min</label><input id="th-fan-min" type="number" step="1"></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label>齿轮温度限 °C</label><input id="th-lim-mesh" type="number" step="1"></div>
+            <div class="field"><label>轴承温度限 °C</label><input id="th-lim-bearing" type="number" step="1"></div>
+            <div class="field"><label>油温限 °C</label><input id="th-lim-oil" type="number" step="1"></div>
+          </div>
+
+          <h3>热网络与节点热流 <span id="th-badge" class="badge"></span></h3>
+          <div id="th-summary" class="tt-summary muted">尚未计算</div>
+          <svg id="th-net-svg" xmlns="http://www.w3.org/2000/svg" class="th-net-svg"></svg>
+          <h3>温度时间轴（拖动游标，开关风扇并联动查看各节点热流）</h3>
+          <div class="th-fan-row">
+            <span class="muted small">风扇：</span>
+            <label><input type="radio" name="th-fan-override" value=""> 按方案</label>
+            <label><input type="radio" name="th-fan-override" value="on"> 强制开</label>
+            <label><input type="radio" name="th-fan-override" value="off"> 强制关</label>
+            <span id="th-cursor-readout" class="th-cursor-readout"></span>
+          </div>
+          <svg id="th-chart" xmlns="http://www.w3.org/2000/svg" class="th-chart"></svg>
+          <div id="th-legend" class="th-legend"></div>
+          <h3>问题时段定位</h3>
+          <ul id="th-issues" class="lc-issue-list"></ul>
+          <h3>各运行段热平衡</h3>
+          <div id="th-balance"></div>
+
+          <h3>方案搜索（油品 × 散热面积 × 风扇阈值）</h3>
+          <p class="muted small">勾选「锁定现有散热条件」后只在油品范围内搜索；否则同时枚举散热片面积与风扇启停阈值。按超限时长 → 峰值温度 → 能耗 → 改动量排序。</p>
+          <div class="field-row">
+            <div class="field"><label><input id="th-lock-cool" type="checkbox"> 锁定现有散热条件</label></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label>参与搜索的油品</label><div id="th-search-oils" class="th-oil-checks"></div></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label>面积下限 m²</label><input id="th-a-min" type="number" step="0.1"></div>
+            <div class="field"><label>面积上限 m²</label><input id="th-a-max" type="number" step="0.1"></div>
+            <div class="field"><label>面积步长</label><input id="th-a-step" type="number" step="0.1"></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label>启动温下限</label><input id="th-on-min" type="number" step="1"></div>
+            <div class="field"><label>启动温上限</label><input id="th-on-max" type="number" step="1"></div>
+            <div class="field"><label>步长</label><input id="th-on-step" type="number" step="1"></div>
+            <div class="field"><label>停机温下限</label><input id="th-off-min" type="number" step="1"></div>
+            <div class="field"><label>停机温上限</label><input id="th-off-max" type="number" step="1"></div>
+            <div class="field"><label>步长</label><input id="th-off-step" type="number" step="1"></div>
+          </div>
+          <button id="btn-th-search" type="button" class="primary">搜索散热方案</button>
+          <div id="ths-meta" class="muted small"></div>
+          <ol id="ths-list"></ol>
+        </div>
+        <p id="th-empty" class="muted">还没有热平衡草稿：先在「载荷工况」页保存受载版本，再点「从载荷版本建立草稿」，冻结各级功率损失/转速/持续时间，然后填写环境、热容量、热阻、油品与风扇阈值；来源载荷变化时版本只标记过期。</p>
+      </div>
+
       <div class="panel" id="panel-library">
         <div class="field-row">
           <input id="alt-name" placeholder="方案名称（可选）">
@@ -349,5 +481,6 @@
 <script src="/static/app.js"></script>
 <script src="/static/backlash.js"></script>
 <script src="/static/loadcase.js"></script>
+<script src="/static/thermal.js"></script>
 </body>
 </html>

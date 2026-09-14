@@ -1008,6 +1008,7 @@ function renderPanels() {
   renderSearchPanel();
   if (typeof blSchedule === 'function') blSchedule();   // 回程间隙：源轮系变化时刷新过期标记
   if (typeof lcSchedule === 'function') lcSchedule();   // 载荷工况：源轮系变化时刷新过期标记
+  if (typeof thSchedule === 'function') thSchedule();   // 热平衡：源轮系变化时刷新过期标记
 }
 
 function renderAnalysisPanel() {
@@ -2559,6 +2560,7 @@ function switchTab(name) {
   if (name === 'teeth' && selectedAsmCand < 0 && teethVer !== stateVersion) scheduleTeethFetch();
   if (name === 'backlash' && typeof blTabShown === 'function') blTabShown();
   if (name === 'loadcase' && typeof lcTabShown === 'function') lcTabShown();
+  if (name === 'thermal' && typeof thTabShown === 'function') thTabShown();
 }
 document.querySelectorAll('.tab').forEach(t =>
   t.addEventListener('click', () => switchTab(t.dataset.tab)));

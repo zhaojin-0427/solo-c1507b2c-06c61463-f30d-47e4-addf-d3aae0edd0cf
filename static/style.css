@@ -506,3 +506,50 @@ h3:first-child { margin-top: 4px; }
 .lc-search-list { margin-top: 6px; }
 .lc-cand { padding: 6px 8px; margin: 5px 0; }
 .lc-cand .actions { margin-top: 4px; }
+
+/* ---------- 热平衡工况 ---------- */
+.th-seg-list { display: flex; flex-direction: column; gap: 6px; margin: 6px 0; }
+.th-source-card, .th-seg-card, .th-bal-card, .th-node-card {
+  border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px;
+  background: var(--panel); margin: 4px 0;
+}
+.th-source-card.unused { opacity: .55; }
+.th-source-card .bl-mesh-head, .th-seg-card .bl-mesh-head { display: flex; gap: 8px; align-items: center; }
+.th-seg-card.stop { background: #f4efe5; }
+.th-seg-kind { font-size: 11px; color: var(--muted); border: 1px solid var(--line);
+  border-radius: 4px; padding: 0 5px; }
+.th-seg-name { flex: 1; min-width: 80px; border: none; border-bottom: 1px solid var(--line);
+  background: transparent; font: inherit; }
+.th-node-list { display: flex; flex-direction: column; gap: 2px; margin: 4px 0; }
+.th-node-group-title { margin: 6px 0 2px; }
+.th-node-card { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px;
+  padding: 3px 8px; }
+.th-node-name { font-weight: 600; min-width: 150px; }
+.th-node-card label { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 3px; }
+.th-node-card input { width: 64px; }
+.th-visc-svg { width: 100%; height: 90px; background: #f8f5ee; border-radius: 6px;
+  border: 1px solid var(--line); }
+.th-net-svg { width: 100%; height: 360px; background: #f8f5ee; border-radius: 6px;
+  border: 1px solid var(--line); }
+.th-node-temp { font-size: 9px; font-weight: 700; fill: var(--ink); pointer-events: none; }
+.th-node circle { cursor: pointer; }
+.th-node:hover circle { stroke-width: 2.4; }
+.th-flow-label { font-size: 8px; fill: var(--hl); font-weight: 600; pointer-events: none; }
+.th-chart { width: 100%; height: 220px; background: #f8f5ee; border-radius: 6px;
+  border: 1px solid var(--line); touch-action: none; }
+.th-fan-row { display: flex; align-items: center; gap: 10px; margin: 4px 0; font-size: 12px; }
+.th-cursor-readout { color: var(--err); font-size: 12px; font-weight: 600; }
+.th-legend { display: flex; flex-wrap: wrap; gap: 10px; margin: 4px 2px; font-size: 11px;
+  color: var(--muted); }
+.th-lg-item { display: inline-flex; align-items: center; gap: 4px; }
+.th-lg-line { width: 16px; height: 3px; background: var(--accent); display: inline-block; }
+.th-lg-line.dash { background: repeating-linear-gradient(90deg, #c98a1f 0 5px, transparent 5px 8px);
+  height: 2px; }
+.th-bal-card { display: flex; gap: 10px; align-items: center; padding: 4px 8px; cursor: pointer; }
+.th-bal-card.bad { border-color: var(--warn); background: #fff6e5; }
+.th-bal-card:hover { border-color: var(--accent); }
+.th-oil-checks { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.th-oil-checks label { font-size: 12px; font-weight: 400; display: inline-flex;
+  align-items: center; gap: 3px; }
+#ths-list .current-cand { border-color: var(--ok); background: #f0f7f0; }
+.th-inline-lbl { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 3px; }
